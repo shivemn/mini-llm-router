@@ -98,13 +98,16 @@ function authorized(req) {
 }
 
 async function readJson(req) {
-  let raw = "";
+  const chunks = [];
+  let size = 0;
   for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 1_000_000) throw new Error("Request body is too large (1 MB maximum).");
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > 1_000_000) throw new Error("Request body is too large (1 MB maximum).");
+    chunks.push(bytes);
   }
   try {
-    return JSON.parse(raw);
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new Error("Request body must be valid JSON.");
   }
@@ -192,6 +195,9 @@ const server = http.createServer(async (req, res) => {
   if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
   if (config.providers.length === 0) {
     return json(res, 503, { error: { message: "Configure PROVIDERS_JSON or the legacy UPSTREAM_* settings in .env." } });
+  }
+  if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) {
+    return json(res, 415, { error: { message: "Content-Type must be application/json." } });
   }
 
   let body;

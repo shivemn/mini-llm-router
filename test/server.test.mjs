@@ -129,6 +129,19 @@ test("rejects malformed JSON and empty messages", async () => {
   assert.equal(malformed.status, 400);
   const empty = await fetch(url, { method: "POST", headers, body: JSON.stringify({ messages: [] }) });
   assert.equal(empty.status, 400);
+  const wrongType = await fetch(url, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "text/plain" },
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(wrongType.status, 415);
+  const oversized = await fetch(url, {
+    method: "POST",
+    headers,
+    body: "é".repeat(500_001),
+  });
+  assert.equal(oversized.status, 400);
+  assert.match((await oversized.json()).error.message, /too large/);
 });
 
 test("forwards requests with the configured model and relays provider errors", async () => {
