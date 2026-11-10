@@ -246,3 +246,13 @@ server.listen(config.port, config.host, () => {
     console.log("Add provider settings to .env to enable chat requests.");
   }
 });
+
+function shutdown(signal) {
+  console.log(JSON.stringify({ event: "server_shutdown", signal }));
+  server.close(() => process.exit(0));
+  const forceClose = setTimeout(() => server.closeAllConnections(), 10_000);
+  forceClose.unref();
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));

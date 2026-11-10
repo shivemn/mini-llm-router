@@ -25,6 +25,8 @@ Requests with `"stream": true` pass the upstream response stream through to the 
 
 Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.
 
+On Ctrl+C or SIGTERM, the server stops accepting new connections and allows active requests up to 10 seconds to finish before closing them.
+
 Example provider configuration:
 
 ```dotenv
