@@ -125,6 +125,27 @@ async function fetchUpstream(provider, body) {
   throw new Error("Upstream retries exhausted.");
 }
 
+async function fetchWithFallback(model, body) {
+  const candidates = config.providers.filter((provider) => Object.hasOwn(provider.models, model));
+  let lastError;
+  for (let index = 0; index < candidates.length; index++) {
+    try {
+      const response = await fetchUpstream(candidates[index], body);
+      const canFallback = response.status === 429 || retryableStatuses.has(response.status);
+      if (canFallback && index < candidates.length - 1) {
+        await response.body?.cancel();
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (index === candidates.length - 1) throw error;
+    }
+  }
+  if (lastError) throw lastError;
+  throw new Error("No provider is configured for the requested model.");
+}
+
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
 
@@ -163,13 +184,12 @@ const server = http.createServer(async (req, res) => {
   if (typeof body.model !== "string" || !body.model) {
     return json(res, 400, { error: { message: "Provide a model name from GET /v1/models." } });
   }
-  const provider = config.providers.find((candidate) => Object.hasOwn(candidate.models, body.model));
-  if (!provider) {
+  if (!config.providers.some((candidate) => Object.hasOwn(candidate.models, body.model))) {
     return json(res, 404, { error: { message: `Unknown model '${body.model}'. List available models with GET /v1/models.` } });
   }
 
   try {
-    const upstream = await fetchUpstream(provider, body);
+    const upstream = await fetchWithFallback(body.model, body);
     const contentType = upstream.headers.get("content-type") || "application/json";
     const responseBody = await upstream.text();
     res.writeHead(upstream.status, { "content-type": contentType });

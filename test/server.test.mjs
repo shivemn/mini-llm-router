@@ -12,6 +12,7 @@ let appPort;
 let upstreamPort;
 let upstreamRequest;
 let transientFailures = 0;
+let upstreamPaths = [];
 
 function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -35,6 +36,12 @@ before(async () => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     upstreamRequest = { url: req.url, authorization: req.headers.authorization, body: JSON.parse(raw) };
+    upstreamPaths.push(req.url);
+    if (upstreamRequest.body.messages[0]?.content === "fallback-test" && req.url.startsWith("/backup/")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "backup response" } }] }));
+      return;
+    }
     if (upstreamRequest.body.messages[0]?.content === "retry-once" && transientFailures++ === 0) {
       res.writeHead(503, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "Temporarily unavailable" } }));
@@ -71,6 +78,11 @@ before(async () => {
           baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
           apiKey: "provider-secret",
           models: { fast: "configured-model" },
+        },
+        backup: {
+          baseUrl: `http://127.0.0.1:${upstreamPort}/backup/v1`,
+          apiKey: "backup-secret",
+          models: { fast: "backup-model" },
         },
       }),
       ROUTER_API_KEY: "router-secret",
@@ -121,9 +133,9 @@ test("forwards requests with the configured model and relays provider errors", a
   });
   assert.equal(response.status, 429);
   assert.deepEqual(await response.json(), { error: { message: "Provider rate limit" } });
-  assert.equal(upstreamRequest.url, "/v1/chat/completions");
-  assert.equal(upstreamRequest.authorization, "Bearer provider-secret");
-  assert.equal(upstreamRequest.body.model, "configured-model");
+  assert.equal(upstreamRequest.url, "/backup/v1/chat/completions");
+  assert.equal(upstreamRequest.authorization, "Bearer backup-secret");
+  assert.equal(upstreamRequest.body.model, "backup-model");
 });
 
 test("retries a temporary upstream server error", async () => {
@@ -136,6 +148,18 @@ test("retries a temporary upstream server error", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { choices: [{ message: { content: "recovered" } }] });
   assert.equal(transientFailures, 2);
+});
+
+test("falls back to the next provider for a throttled model", async () => {
+  upstreamPaths = [];
+  const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "fallback-test" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { choices: [{ message: { content: "backup response" } }] });
+  assert.deepEqual(upstreamPaths, ["/v1/chat/completions", "/backup/v1/chat/completions"]);
 });
 
 test("rejects invalid port configuration at startup", () => {
