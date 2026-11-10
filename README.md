@@ -19,6 +19,8 @@ A small local project that accepts OpenAI-compatible chat requests and routes ea
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token.
 
+`MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 500, 502, 503, and 504 responses. It defaults to 1 and accepts values from 0 to 5. Each retry waits briefly with exponential backoff; timeouts and rate-limit responses are returned without retrying.
+
 Example provider configuration:
 
 ```dotenv

@@ -37,6 +37,10 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be an integer from 1 to 65535.");
   }
+  const maxRetries = Number(env.MAX_UPSTREAM_RETRIES ?? "1");
+  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+    throw new Error("MAX_UPSTREAM_RETRIES must be an integer from 0 to 5.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -64,6 +68,7 @@ function readConfig(env = process.env) {
   return {
     host: env.HOST || "127.0.0.1",
     port,
+    maxRetries,
     providers,
     routerKey: env.ROUTER_API_KEY,
   };
@@ -94,6 +99,30 @@ async function readJson(req) {
   } catch {
     throw new Error("Request body must be valid JSON.");
   }
+}
+
+const retryableStatuses = new Set([408, 500, 502, 503, 504]);
+
+async function fetchUpstream(provider, body) {
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    try {
+      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${provider.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ ...body, model: provider.models[body.model] }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
+      await response.body?.cancel();
+    } catch (error) {
+      if (error.name === "TimeoutError" || attempt === config.maxRetries) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)));
+  }
+  throw new Error("Upstream retries exhausted.");
 }
 
 const server = http.createServer(async (req, res) => {
@@ -140,15 +169,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    const upstream = await fetch(`${provider.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${provider.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ ...body, model: provider.models[body.model] }),
-      signal: AbortSignal.timeout(120_000),
-    });
+    const upstream = await fetchUpstream(provider, body);
     const contentType = upstream.headers.get("content-type") || "application/json";
     const responseBody = await upstream.text();
     res.writeHead(upstream.status, { "content-type": contentType });
