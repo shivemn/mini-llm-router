@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -150,6 +151,19 @@ async function fetchWithFallback(model, body) {
 
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
+  const requestId = randomUUID();
+  const startedAt = performance.now();
+  res.setHeader("x-request-id", requestId);
+  res.once("finish", () => {
+    console.log(JSON.stringify({
+      event: "request_complete",
+      requestId,
+      method: req.method,
+      path: pathname,
+      status: res.statusCode,
+      durationMs: Math.round(performance.now() - startedAt),
+    }));
+  });
 
   if (req.method === "GET" && pathname === "/health") {
     return json(res, 200, { ok: true, configured: config.providers.length > 0 });

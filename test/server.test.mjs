@@ -111,6 +111,7 @@ after(async () => {
 test("requires the router key for protected endpoints", async () => {
   const response = await fetch(`http://127.0.0.1:${appPort}/v1/models`);
   assert.equal(response.status, 401);
+  assert.match(response.headers.get("x-request-id"), /^[0-9a-f-]{36}$/i);
 });
 
 test("lists the public model aliases", async () => {

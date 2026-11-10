@@ -23,6 +23,8 @@ The server binds to `127.0.0.1:3001` by default, so it is available only on your
 
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 
+Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.
+
 Example provider configuration:
 
 ```dotenv
