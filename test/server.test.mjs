@@ -188,3 +188,13 @@ test("rejects invalid port configuration at startup", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /PORT must be an integer from 1 to 65535/);
 });
+
+test("requires router authentication when binding to a non-loopback address", () => {
+  const result = spawnSync(process.execPath, ["server.mjs"], {
+    cwd: fileURLToPath(root),
+    env: { ...process.env, HOST: "0.0.0.0", ROUTER_API_KEY: "" },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ROUTER_API_KEY is required when HOST is not a loopback address/);
+});

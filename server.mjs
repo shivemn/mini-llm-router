@@ -68,12 +68,18 @@ function readConfig(env = process.env) {
     })];
   }
 
+  const host = env.HOST || "127.0.0.1";
+  const routerKey = env.ROUTER_API_KEY;
+  if (!["127.0.0.1", "::1", "localhost"].includes(host) && !routerKey) {
+    throw new Error("ROUTER_API_KEY is required when HOST is not a loopback address.");
+  }
+
   return {
-    host: env.HOST || "127.0.0.1",
+    host,
     port,
     maxRetries,
     providers,
-    routerKey: env.ROUTER_API_KEY,
+    routerKey,
   };
 }
 
