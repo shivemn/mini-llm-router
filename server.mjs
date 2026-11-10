@@ -1,5 +1,36 @@
 import http from "node:http";
 
+function normalizeProvider(name, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Provider '${name}' must be an object.`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(value.baseUrl);
+  } catch {
+    throw new Error(`Provider '${name}' baseUrl must be a valid absolute URL.`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error(`Provider '${name}' baseUrl must use HTTP or HTTPS and must not contain credentials.`);
+  }
+  if (typeof value.apiKey !== "string" || !value.apiKey.trim()) {
+    throw new Error(`Provider '${name}' apiKey must be a non-empty string.`);
+  }
+  if (!value.models || typeof value.models !== "object" || Array.isArray(value.models)) {
+    throw new Error(`Provider '${name}' models must map public model names to upstream model names.`);
+  }
+  const models = Object.entries(value.models);
+  if (models.length === 0 || models.some(([alias, model]) => !alias.trim() || typeof model !== "string" || !model.trim())) {
+    throw new Error(`Provider '${name}' must configure at least one non-empty model mapping.`);
+  }
+  return {
+    name,
+    baseUrl: value.baseUrl.replace(/\/+$/, ""),
+    apiKey: value.apiKey,
+    models: Object.fromEntries(models),
+  };
+}
+
 function readConfig(env = process.env) {
   const rawPort = env.PORT || "3001";
   const port = Number(rawPort);
@@ -7,26 +38,33 @@ function readConfig(env = process.env) {
     throw new Error("PORT must be an integer from 1 to 65535.");
   }
 
-  let baseUrl;
-  if (env.UPSTREAM_BASE_URL) {
-    let parsed;
+  let providers = [];
+  if (env.PROVIDERS_JSON) {
+    let parsedProviders;
     try {
-      parsed = new URL(env.UPSTREAM_BASE_URL);
+      parsedProviders = JSON.parse(env.PROVIDERS_JSON);
     } catch {
-      throw new Error("UPSTREAM_BASE_URL must be a valid absolute URL.");
+      throw new Error("PROVIDERS_JSON must be a valid JSON object containing provider configurations.");
     }
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
-      throw new Error("UPSTREAM_BASE_URL must use HTTP or HTTPS and must not contain credentials.");
+    if (!parsedProviders || typeof parsedProviders !== "object" || Array.isArray(parsedProviders)) {
+      throw new Error("PROVIDERS_JSON must be a valid JSON object containing provider configurations.");
     }
-    baseUrl = env.UPSTREAM_BASE_URL.replace(/\/+$/, "");
+    providers = Object.entries(parsedProviders).map(([name, value]) => normalizeProvider(name, value));
+    if (providers.length === 0) {
+      throw new Error("PROVIDERS_JSON must contain at least one provider.");
+    }
+  } else if (env.UPSTREAM_BASE_URL && env.UPSTREAM_API_KEY && env.UPSTREAM_MODEL) {
+    providers = [normalizeProvider("default", {
+      baseUrl: env.UPSTREAM_BASE_URL,
+      apiKey: env.UPSTREAM_API_KEY,
+      models: { [env.UPSTREAM_MODEL]: env.UPSTREAM_MODEL },
+    })];
   }
 
   return {
     host: env.HOST || "127.0.0.1",
     port,
-    baseUrl,
-    providerKey: env.UPSTREAM_API_KEY,
-    model: env.UPSTREAM_MODEL,
+    providers,
     routerKey: env.ROUTER_API_KEY,
   };
 }
@@ -62,21 +100,26 @@ const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
 
   if (req.method === "GET" && pathname === "/health") {
-    return json(res, 200, { ok: true, configured: Boolean(config.baseUrl && config.providerKey && config.model) });
+    return json(res, 200, { ok: true, configured: config.providers.length > 0 });
   }
 
   if (req.method === "GET" && pathname === "/v1/models") {
     if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
-    if (!config.model) return json(res, 503, { error: { message: "Set UPSTREAM_MODEL in .env first." } });
-    return json(res, 200, { object: "list", data: [{ id: config.model, object: "model", owned_by: "upstream" }] });
+    if (config.providers.length === 0) return json(res, 503, { error: { message: "Configure at least one provider first." } });
+    const data = config.providers.flatMap((provider) => Object.keys(provider.models).map((model) => ({
+      id: model,
+      object: "model",
+      owned_by: provider.name,
+    })));
+    return json(res, 200, { object: "list", data });
   }
 
   if (req.method !== "POST" || pathname !== "/v1/chat/completions") {
     return json(res, 404, { error: { message: "Not found. Try POST /v1/chat/completions or GET /v1/models." } });
   }
   if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
-  if (!config.baseUrl || !config.providerKey || !config.model) {
-    return json(res, 503, { error: { message: "Configure UPSTREAM_BASE_URL, UPSTREAM_API_KEY, and UPSTREAM_MODEL in .env." } });
+  if (config.providers.length === 0) {
+    return json(res, 503, { error: { message: "Configure PROVIDERS_JSON or the legacy UPSTREAM_* settings in .env." } });
   }
 
   let body;
@@ -88,15 +131,22 @@ const server = http.createServer(async (req, res) => {
   if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
     return json(res, 400, { error: { message: "Provide a non-empty messages array." } });
   }
+  if (typeof body.model !== "string" || !body.model) {
+    return json(res, 400, { error: { message: "Provide a model name from GET /v1/models." } });
+  }
+  const provider = config.providers.find((candidate) => Object.hasOwn(candidate.models, body.model));
+  if (!provider) {
+    return json(res, 404, { error: { message: `Unknown model '${body.model}'. List available models with GET /v1/models.` } });
+  }
 
   try {
-    const upstream = await fetch(`${config.baseUrl}/chat/completions`, {
+    const upstream = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${config.providerKey}`,
+        authorization: `Bearer ${provider.apiKey}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ ...body, model: config.model }),
+      body: JSON.stringify({ ...body, model: provider.models[body.model] }),
       signal: AbortSignal.timeout(120_000),
     });
     const contentType = upstream.headers.get("content-type") || "application/json";
@@ -113,7 +163,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, () => {
   console.log(`Mini LLM Router listening at http://${config.host}:${config.port}`);
-  if (!config.baseUrl || !config.providerKey || !config.model) {
+  if (config.providers.length === 0) {
     console.log("Add provider settings to .env to enable chat requests.");
   }
 });

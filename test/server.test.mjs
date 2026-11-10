@@ -55,9 +55,13 @@ before(async () => {
       ...process.env,
       HOST: "127.0.0.1",
       PORT: String(appPort),
-      UPSTREAM_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
-      UPSTREAM_API_KEY: "provider-secret",
-      UPSTREAM_MODEL: "configured-model",
+      PROVIDERS_JSON: JSON.stringify({
+        local: {
+          baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+          apiKey: "provider-secret",
+          models: { fast: "configured-model" },
+        },
+      }),
       ROUTER_API_KEY: "router-secret",
     },
     stdio: "ignore",
@@ -81,6 +85,14 @@ test("requires the router key for protected endpoints", async () => {
   assert.equal(response.status, 401);
 });
 
+test("lists the public model aliases", async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/v1/models`, {
+    headers: { authorization: "Bearer router-secret" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data[0].id, "fast");
+});
+
 test("rejects malformed JSON and empty messages", async () => {
   const url = `http://127.0.0.1:${appPort}/v1/chat/completions`;
   const headers = { authorization: "Bearer router-secret", "content-type": "application/json" };
@@ -94,7 +106,7 @@ test("forwards requests with the configured model and relays provider errors", a
   const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
     method: "POST",
     headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
-    body: JSON.stringify({ model: "client-model", messages: [{ role: "user", content: "hello" }] }),
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hello" }] }),
   });
   assert.equal(response.status, 429);
   assert.deepEqual(await response.json(), { error: { message: "Provider rate limit" } });

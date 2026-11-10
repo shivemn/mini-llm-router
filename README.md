@@ -1,6 +1,6 @@
 # Mini LLM Router
 
-A small local project that accepts an OpenAI-compatible chat request and forwards it to one configured OpenAI-compatible provider. It is a learning starter: it does not yet include multi-provider routing, streaming, a dashboard, or encrypted key storage.
+A small local project that accepts OpenAI-compatible chat requests and routes each requested model name to a configured upstream provider and model ID. It is a learning starter: it does not yet include automatic fallback, streaming, a dashboard, or encrypted key storage.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ A small local project that accepts an OpenAI-compatible chat request and forward
 ## Run on Windows PowerShell
 
 1. Copy `.env.example` to `.env`.
-2. Edit `.env` and set the provider's base URL, API key, and model ID. Keep `.env` private; it is ignored by Git.
+2. Edit `.env` and set `PROVIDERS_JSON` with provider names, base URLs, API keys, and public-name-to-upstream-model mappings. Keep `.env` private; it is ignored by Git.
 3. In this folder, run:
 
    ```powershell
@@ -19,7 +19,13 @@ A small local project that accepts an OpenAI-compatible chat request and forward
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token.
 
-The server validates `PORT` and requires `UPSTREAM_BASE_URL`, when provided, to be an absolute HTTP or HTTPS URL without embedded credentials. Leaving provider settings blank is allowed; chat requests return a configuration error until they are set.
+Example provider configuration:
+
+```dotenv
+PROVIDERS_JSON={"openai":{"baseUrl":"https://api.openai.com/v1","apiKey":"your-provider-key","models":{"fast":"gpt-4o-mini"}},"local":{"baseUrl":"http://127.0.0.1:11434/v1","apiKey":"local-token","models":{"local-model":"llama3.1"}}}
+```
+
+Clients can request `fast` or `local-model`; the router sends the mapped upstream model ID. `GET /v1/models` lists configured public names. The legacy `UPSTREAM_BASE_URL`, `UPSTREAM_API_KEY`, and `UPSTREAM_MODEL` settings remain supported as a single-provider configuration. The server validates `PORT` and each provider URL, and rejects URLs with embedded credentials. Leaving provider settings blank is allowed; chat requests return a configuration error until they are set.
 
 Run the automated checks with:
 
@@ -40,12 +46,12 @@ $body = @{
 Invoke-RestMethod -Uri http://127.0.0.1:3001/v1/chat/completions -Method Post -Headers $headers -ContentType "application/json" -Body $body
 ```
 
-If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. The requested model name is replaced with `UPSTREAM_MODEL`, because this starter routes to one configured model.
+If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `model` to one of the public names configured in `PROVIDERS_JSON` (or to `UPSTREAM_MODEL` in legacy mode).
 
 ## Endpoints
 
 - `GET /health` — local status and whether provider settings are present.
-- `GET /v1/models` — the configured model in OpenAI-style list format.
+- `GET /v1/models` — configured public model names in OpenAI-style list format.
 - `POST /v1/chat/completions` — forwards chat requests and provider responses.
 
 Never commit `.env` or share API keys. This starter is intended for local learning, not for an internet-facing service. Check your provider's terms and pricing before sending requests.
