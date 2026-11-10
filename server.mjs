@@ -1,4 +1,6 @@
 import http from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 function normalizeProvider(name, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -191,10 +193,20 @@ const server = http.createServer(async (req, res) => {
   try {
     const upstream = await fetchWithFallback(body.model, body);
     const contentType = upstream.headers.get("content-type") || "application/json";
+    if (body.stream === true) {
+      res.writeHead(upstream.status, { "content-type": contentType });
+      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res);
+      else res.end();
+      return;
+    }
     const responseBody = await upstream.text();
     res.writeHead(upstream.status, { "content-type": contentType });
     res.end(responseBody);
   } catch (error) {
+    if (res.headersSent) {
+      res.destroy(error);
+      return;
+    }
     const timedOut = error.name === "TimeoutError";
     return json(res, timedOut ? 504 : 502, {
       error: { message: timedOut ? "The upstream provider took too long to respond." : "Could not reach the upstream provider." },

@@ -37,6 +37,11 @@ before(async () => {
     for await (const chunk of req) raw += chunk;
     upstreamRequest = { url: req.url, authorization: req.headers.authorization, body: JSON.parse(raw) };
     upstreamPaths.push(req.url);
+    if (upstreamRequest.body.stream === true) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
+      return;
+    }
     if (upstreamRequest.body.messages[0]?.content === "fallback-test" && req.url.startsWith("/backup/")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { content: "backup response" } }] }));
@@ -160,6 +165,17 @@ test("falls back to the next provider for a throttled model", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { choices: [{ message: { content: "backup response" } }] });
   assert.deepEqual(upstreamPaths, ["/v1/chat/completions", "/backup/v1/chat/completions"]);
+});
+
+test("passes server-sent event responses through for stream requests", async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", stream: true, messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/event-stream/);
+  assert.equal(await response.text(), 'data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
 });
 
 test("rejects invalid port configuration at startup", () => {
