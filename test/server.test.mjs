@@ -56,6 +56,11 @@ before(async () => {
       }, 250);
       return;
     }
+    if (upstreamRequest.body.messages[0]?.content === "circuit-test") {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Provider unavailable" } }));
+      return;
+    }
     if (upstreamRequest.body.stream === true) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
@@ -124,10 +129,24 @@ before(async () => {
           timeoutMs: 1_000,
           models: { fast: "backup-model" },
         },
+        breakerA: {
+          baseUrl: `http://127.0.0.1:${upstreamPort}/breaker-a/v1`,
+          apiKey: "breaker-a-secret",
+          timeoutMs: 1_000,
+          models: { breaker: "circuit-model" },
+        },
+        breakerB: {
+          baseUrl: `http://127.0.0.1:${upstreamPort}/breaker-b/v1`,
+          apiKey: "breaker-b-secret",
+          timeoutMs: 1_000,
+          models: { breaker: "circuit-model" },
+        },
       }),
       ROUTER_API_KEY: "router-secret",
       MAX_UPSTREAM_RETRIES: "1",
       MAX_CONCURRENT_REQUESTS: "1",
+      CIRCUIT_BREAKER_FAILURE_THRESHOLD: "1",
+      CIRCUIT_BREAKER_OPEN_MS: "1000",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -321,4 +340,17 @@ test("requires router authentication when binding to a non-loopback address", ()
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /ROUTER_API_KEY is required when HOST is not a loopback address/);
+});
+
+test("opens provider circuits after repeated failures and returns 503 while all are open", async () => {
+  const requestOptions = {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "breaker", messages: [{ role: "user", content: "circuit-test" }] }),
+  };
+  const first = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, requestOptions);
+  assert.equal(first.status, 503);
+  const second = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, requestOptions);
+  assert.equal(second.status, 503);
+  assert.match((await second.json()).error.message, /All providers.*temporarily unavailable/);
 });

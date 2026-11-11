@@ -53,6 +53,14 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(maxConcurrentRequests) || maxConcurrentRequests < 1 || maxConcurrentRequests > 1000) {
     throw new Error("MAX_CONCURRENT_REQUESTS must be an integer from 1 to 1000.");
   }
+  const circuitFailureThreshold = Number(env.CIRCUIT_BREAKER_FAILURE_THRESHOLD ?? "3");
+  if (!Number.isInteger(circuitFailureThreshold) || circuitFailureThreshold < 1 || circuitFailureThreshold > 20) {
+    throw new Error("CIRCUIT_BREAKER_FAILURE_THRESHOLD must be an integer from 1 to 20.");
+  }
+  const circuitOpenMs = Number(env.CIRCUIT_BREAKER_OPEN_MS ?? "30000");
+  if (!Number.isInteger(circuitOpenMs) || circuitOpenMs < 1000 || circuitOpenMs > 300000) {
+    throw new Error("CIRCUIT_BREAKER_OPEN_MS must be an integer from 1000 to 300000.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -94,6 +102,8 @@ function readConfig(env = process.env) {
     port,
     maxRetries,
     maxConcurrentRequests,
+    circuitFailureThreshold,
+    circuitOpenMs,
     providers,
     routerKey,
   };
@@ -131,6 +141,28 @@ async function readJson(req) {
 
 const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
 let activeRequests = 0;
+const providerCircuits = new Map();
+
+function circuitFor(provider) {
+  if (!providerCircuits.has(provider.name)) {
+    providerCircuits.set(provider.name, { failures: 0, openUntil: 0 });
+  }
+  return providerCircuits.get(provider.name);
+}
+
+function recordProviderFailure(provider) {
+  const circuit = circuitFor(provider);
+  circuit.failures++;
+  if (circuit.failures >= config.circuitFailureThreshold) {
+    circuit.openUntil = Date.now() + config.circuitOpenMs;
+  }
+}
+
+function recordProviderSuccess(provider) {
+  const circuit = circuitFor(provider);
+  circuit.failures = 0;
+  circuit.openUntil = 0;
+}
 
 function retryDelay(response, attempt) {
   const retryAfter = response.headers.get("retry-after");
@@ -175,9 +207,16 @@ async function fetchUpstream(provider, body, requestSignal) {
 async function fetchWithFallback(model, body, requestSignal) {
   const candidates = config.providers.filter((provider) => Object.hasOwn(provider.models, model));
   let lastError;
+  let openProviders = 0;
   for (let index = 0; index < candidates.length; index++) {
+    if (circuitFor(candidates[index]).openUntil > Date.now()) {
+      openProviders++;
+      continue;
+    }
     try {
       const response = await fetchUpstream(candidates[index], body, requestSignal);
+      if (response.status >= 500) recordProviderFailure(candidates[index]);
+      else recordProviderSuccess(candidates[index]);
       const canFallback = response.status === 429 || retryableStatuses.has(response.status);
       if (canFallback && index < candidates.length - 1) {
         await response.body?.cancel();
@@ -185,9 +224,15 @@ async function fetchWithFallback(model, body, requestSignal) {
       }
       return response;
     } catch (error) {
+      if (requestSignal.aborted) throw error;
+      recordProviderFailure(candidates[index]);
       lastError = error;
-      if (index === candidates.length - 1) throw error;
     }
+  }
+  if (openProviders === candidates.length) {
+    const error = new Error("All providers for this model are temporarily unavailable.");
+    error.statusCode = 503;
+    throw error;
   }
   if (lastError) throw lastError;
   throw new Error("No provider is configured for the requested model.");
@@ -295,8 +340,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const timedOut = error.name === "TimeoutError";
-    return json(res, timedOut ? 504 : 502, {
-      error: { message: timedOut ? "The upstream provider took too long to respond." : "Could not reach the upstream provider." },
+    const statusCode = error.statusCode || (timedOut ? 504 : 502);
+    return json(res, statusCode, {
+      error: { message: error.statusCode ? error.message : timedOut ? "The upstream provider took too long to respond." : "Could not reach the upstream provider." },
     });
   }
 });
