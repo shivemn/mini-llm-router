@@ -19,7 +19,7 @@ A small local project that accepts OpenAI-compatible chat requests and routes ea
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token. Binding to any non-loopback `HOST` requires `ROUTER_API_KEY` at startup.
 
-`MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 500, 502, 503, and 504 responses. It defaults to 1 and accepts values from 0 to 5. Each retry waits briefly with exponential backoff; timeouts and rate-limit responses are returned without retrying.
+`MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 

@@ -58,7 +58,7 @@ before(async () => {
       res.end(JSON.stringify({ choices: [{ message: { content: "recovered" } }] }));
       return;
     }
-    res.writeHead(429, { "content-type": "application/json" });
+    res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
     res.end(JSON.stringify({ error: { message: "Provider rate limit" } }));
   });
   await listen(upstream);
@@ -92,6 +92,7 @@ before(async () => {
         },
       }),
       ROUTER_API_KEY: "router-secret",
+      MAX_UPSTREAM_RETRIES: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -181,7 +182,11 @@ test("falls back to the next provider for a throttled model", async () => {
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { choices: [{ message: { content: "backup response" } }] });
-  assert.deepEqual(upstreamPaths, ["/v1/chat/completions", "/backup/v1/chat/completions"]);
+  assert.deepEqual(upstreamPaths, [
+    "/v1/chat/completions",
+    "/v1/chat/completions",
+    "/backup/v1/chat/completions",
+  ]);
 });
 
 test("passes server-sent event responses through for stream requests", async () => {

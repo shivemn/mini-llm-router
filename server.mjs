@@ -40,7 +40,7 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be an integer from 1 to 65535.");
   }
-  const maxRetries = Number(env.MAX_UPSTREAM_RETRIES ?? "1");
+  const maxRetries = Number(env.MAX_UPSTREAM_RETRIES ?? "0");
   if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
     throw new Error("MAX_UPSTREAM_RETRIES must be an integer from 0 to 5.");
   }
@@ -119,7 +119,22 @@ async function readJson(req) {
   }
 }
 
-const retryableStatuses = new Set([408, 500, 502, 503, 504]);
+const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
+
+function retryDelay(response, attempt) {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const retryAt = Date.parse(retryAfter);
+    const requestedDelay = Number.isFinite(seconds)
+      ? seconds * 1000
+      : Number.isFinite(retryAt) ? retryAt - Date.now() : NaN;
+    if (Number.isFinite(requestedDelay) && requestedDelay >= 0) {
+      return Math.min(10_000, requestedDelay);
+    }
+  }
+  return 100 * (2 ** attempt);
+}
 
 async function fetchUpstream(provider, body) {
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
@@ -134,11 +149,14 @@ async function fetchUpstream(provider, body) {
         signal: AbortSignal.timeout(120_000),
       });
       if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
+      const delay = retryDelay(response, attempt);
       await response.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
     } catch (error) {
       if (error.name === "TimeoutError" || attempt === config.maxRetries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)));
     }
-    await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)));
   }
   throw new Error("Upstream retries exhausted.");
 }
