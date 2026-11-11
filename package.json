@@ -4,10 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file=.env server.mjs",
+    "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import ./instrumentation.mjs --env-file=.env server.mjs",
     "test": "node --test"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.1",
+    "@opentelemetry/instrumentation": "^0.301.1",
+    "@opentelemetry/instrumentation-http": "^0.301.1",
+    "@opentelemetry/instrumentation-undici": "^0.35.0",
+    "@opentelemetry/sdk-node": "^0.301.1"
   }
 }

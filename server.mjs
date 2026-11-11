@@ -1,7 +1,11 @@
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { shutdownTelemetry } from "./instrumentation.mjs";
+
+const tracer = trace.getTracer("mini-llm-router");
 
 function normalizeProvider(name, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -258,14 +262,34 @@ function retryDelay(response, attempt) {
 async function fetchUpstream(provider, body, requestSignal) {
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
-      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${provider.apiKey}`,
-          "content-type": "application/json",
+      const response = await tracer.startActiveSpan("llm.provider.request", {
+        attributes: {
+          "llm.provider.name": provider.name,
+          "llm.model.requested": body.model,
+          "llm.model.upstream": provider.models[body.model],
+          "llm.provider.attempt": attempt + 1,
         },
-        body: JSON.stringify({ ...body, model: provider.models[body.model] }),
-        signal: AbortSignal.any([requestSignal, AbortSignal.timeout(provider.timeoutMs)]),
+      }, async (span) => {
+        try {
+          const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${provider.apiKey}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ ...body, model: provider.models[body.model] }),
+            signal: AbortSignal.any([requestSignal, AbortSignal.timeout(provider.timeoutMs)]),
+          });
+          span.setAttribute("http.response.status_code", response.status);
+          if (response.status >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+          return response;
+        } catch (error) {
+          span.recordException(error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          span.end();
+        }
       });
       if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
       const delay = retryDelay(response, attempt);
@@ -410,7 +434,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    const upstream = await fetchWithFallback(body.model, body, requestAbort.signal);
+    const upstream = await tracer.startActiveSpan("llm.router.route", {
+      attributes: { "llm.model.requested": body.model },
+    }, async (span) => {
+      try {
+        const response = await fetchWithFallback(body.model, body, requestAbort.signal);
+        span.setAttribute("http.response.status_code", response.status);
+        return response;
+      } catch (error) {
+        span.recordException(error);
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
     const contentType = upstream.headers.get("content-type") || "application/json";
     if (body.stream === true) {
       res.writeHead(upstream.status, { "content-type": contentType });
@@ -444,7 +482,10 @@ server.listen(config.port, config.host, () => {
 
 function shutdown(signal) {
   console.log(JSON.stringify({ event: "server_shutdown", signal }));
-  server.close(() => process.exit(0));
+  server.close(async () => {
+    await shutdownTelemetry();
+    process.exit(0);
+  });
   const forceClose = setTimeout(() => server.closeAllConnections(), 10_000);
   forceClose.unref();
 }

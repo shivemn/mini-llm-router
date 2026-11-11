@@ -31,6 +31,10 @@ Requests with `"stream": true` pass the upstream response stream through to the 
 
 Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.
 
+### OpenTelemetry tracing
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector URL to enable traces; leave it blank to keep tracing disabled. The router creates spans for provider selection and individual provider attempts, and the HTTP and `fetch` instrumentations capture inbound and outbound request spans. Trace attributes include provider and model names, status, and attempt number; prompts and API keys are not recorded. The startup command enables the OpenTelemetry ESM loader required by this project's module format. See the [OpenTelemetry Node.js guide](https://opentelemetry.io/docs/languages/js/getting-started/nodejs/) and [ESM support notes](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/esm-support.md).
+
 On Ctrl+C or SIGTERM, the server stops accepting new connections and allows active requests up to 10 seconds to finish before closing them.
 
 Example provider configuration:

@@ -110,7 +110,12 @@ before(async () => {
     });
   });
 
-  app = spawn(process.execPath, ["server.mjs"], {
+  app = spawn(process.execPath, [
+    "--experimental-loader=@opentelemetry/instrumentation/hook.mjs",
+    "--import",
+    "./instrumentation.mjs",
+    "server.mjs",
+  ], {
     cwd: fileURLToPath(root),
     env: {
       ...process.env,
