@@ -21,6 +21,8 @@ The server binds to `127.0.0.1:3001` by default, so it is available only on your
 
 `MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
+`MAX_CONCURRENT_REQUESTS` caps in-flight chat requests per process. It defaults to 100 and accepts values from 1 to 1000. Requests above the cap receive HTTP 503 with `Retry-After: 1`.
+
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 
 Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.

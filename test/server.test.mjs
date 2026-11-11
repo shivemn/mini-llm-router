@@ -16,6 +16,7 @@ let upstreamPaths = [];
 let appOutput = "";
 let waitForCancelledUpstream;
 let upstreamResponseClosed;
+let signalHeldRequest;
 
 function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -43,6 +44,16 @@ before(async () => {
     if (upstreamRequest.body.messages[0]?.content === "cancel-test") {
       upstreamResponseClosed = new Promise((resolve) => res.once("close", resolve));
       waitForCancelledUpstream?.();
+      return;
+    }
+    if (upstreamRequest.body.messages[0]?.content === "hold-test") {
+      signalHeldRequest?.();
+      setTimeout(() => {
+        if (!res.destroyed) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ choices: [{ message: { content: "finished" } }] }));
+        }
+      }, 250);
       return;
     }
     if (upstreamRequest.body.stream === true) {
@@ -116,6 +127,7 @@ before(async () => {
       }),
       ROUTER_API_KEY: "router-secret",
       MAX_UPSTREAM_RETRIES: "1",
+      MAX_CONCURRENT_REQUESTS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -251,6 +263,25 @@ test("aborts the upstream request when the client disconnects", async () => {
     new Promise((resolve) => setTimeout(() => resolve(false), 1_000)),
   ]);
   assert.equal(cancelled, true);
+});
+
+test("rejects requests above the configured concurrency limit", async () => {
+  const requestArrived = new Promise((resolve) => { signalHeldRequest = resolve; });
+  const firstResponse = fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hold-test" }] }),
+  });
+  await requestArrived;
+  const rejected = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "over-limit" }] }),
+  });
+  assert.equal(rejected.status, 503);
+  assert.equal(rejected.headers.get("retry-after"), "1");
+  const accepted = await firstResponse;
+  assert.equal(accepted.status, 200);
 });
 
 test("rejects invalid port configuration at startup", () => {

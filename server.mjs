@@ -49,6 +49,10 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
     throw new Error("MAX_UPSTREAM_RETRIES must be an integer from 0 to 5.");
   }
+  const maxConcurrentRequests = Number(env.MAX_CONCURRENT_REQUESTS ?? "100");
+  if (!Number.isInteger(maxConcurrentRequests) || maxConcurrentRequests < 1 || maxConcurrentRequests > 1000) {
+    throw new Error("MAX_CONCURRENT_REQUESTS must be an integer from 1 to 1000.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -89,6 +93,7 @@ function readConfig(env = process.env) {
     host,
     port,
     maxRetries,
+    maxConcurrentRequests,
     providers,
     routerKey,
   };
@@ -125,6 +130,7 @@ async function readJson(req) {
 }
 
 const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
+let activeRequests = 0;
 
 function retryDelay(response, attempt) {
   const retryAfter = response.headers.get("retry-after");
@@ -230,6 +236,19 @@ const server = http.createServer(async (req, res) => {
   if (config.providers.length === 0) {
     return json(res, 503, { error: { message: "Configure PROVIDERS_JSON or the legacy UPSTREAM_* settings in .env." } });
   }
+  if (activeRequests >= config.maxConcurrentRequests) {
+    res.setHeader("retry-after", "1");
+    return json(res, 503, { error: { message: "Router is at its concurrent request limit. Retry shortly." } });
+  }
+  activeRequests++;
+  let requestSlotReleased = false;
+  const releaseRequestSlot = () => {
+    if (requestSlotReleased) return;
+    requestSlotReleased = true;
+    activeRequests--;
+  };
+  res.once("finish", releaseRequestSlot);
+  res.once("close", releaseRequestSlot);
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers["content-type"] || "")) {
     return json(res, 415, { error: { message: "Content-Type must be application/json." } });
   }
