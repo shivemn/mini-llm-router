@@ -29,6 +29,10 @@ For a local host run, configure the AWS CLI credentials/profile before `npm star
 aws secretsmanager create-secret --name mini-llm-router/openai --secret-string '{"apiKey":"replace-with-provider-key"}' --region us-east-1
 ```
 
+### Provider protocols
+
+The client endpoint remains `POST /v1/chat/completions`. Set each provider's `protocol` to `openai-compatible` (the default), `anthropic`, or `gemini`. OpenAI-compatible providers receive the chat-completions request directly with the configured model substitution. Anthropic uses the Messages API, and Gemini uses `generateContent` or `streamGenerateContent`; their text responses and SSE text chunks are converted back into OpenAI-style chat-completion responses. The Anthropic base URL can be `https://api.anthropic.com` (or end in `/v1`); the Gemini base URL should include `/v1beta`. These adapters currently handle text messages and common generation settings. Tool calls and provider-specific multimodal inputs require protocol-specific mapping and are not supported by these adapters yet.
+
 `MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
 `MAX_CONCURRENT_REQUESTS` caps in-flight chat requests per process. It defaults to 100 and accepts values from 1 to 1000. Requests above the cap receive HTTP 503 with `Retry-After: 1`.

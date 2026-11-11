@@ -8,6 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --chown=node:node server.mjs instrumentation.mjs ./
+COPY --chown=node:node providers/ ./providers/
 
 USER node
 EXPOSE 3001

@@ -6,6 +6,7 @@ import { createClient } from "redis";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { shutdownTelemetry } from "./instrumentation.mjs";
+import { adaptProviderResponse, buildProviderRequest } from "./providers/adapters.mjs";
 
 const tracer = trace.getTracer("mini-llm-router");
 
@@ -30,6 +31,10 @@ function normalizeProvider(name, value) {
   if (value.apiKeySecretId !== undefined && !hasSecretId) {
     throw new Error(`Provider '${name}' apiKeySecretId must be a non-empty secret name or ARN.`);
   }
+  const protocol = value.protocol || "openai-compatible";
+  if (!["openai-compatible", "anthropic", "gemini"].includes(protocol)) {
+    throw new Error(`Provider '${name}' protocol must be openai-compatible, anthropic, or gemini.`);
+  }
   const timeoutMs = value.timeoutMs ?? 120_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
     throw new Error(`Provider '${name}' timeoutMs must be an integer from 100 to 300000.`);
@@ -43,6 +48,7 @@ function normalizeProvider(name, value) {
   }
   return {
     name,
+    protocol,
     baseUrl: value.baseUrl.replace(/\/+$/, ""),
     apiKey: hasInlineKey ? value.apiKey : undefined,
     apiKeySecretId: hasSecretId ? value.apiKeySecretId : undefined,
@@ -432,13 +438,14 @@ async function fetchUpstream(provider, body, requestSignal) {
         },
       }, async (span) => {
         try {
-          const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+          const request = buildProviderRequest(provider, body);
+          const response = await fetch(request.url, {
             method: "POST",
             headers: {
-              authorization: `Bearer ${provider.apiKey}`,
               "content-type": "application/json",
+              ...request.headers,
             },
-            body: JSON.stringify({ ...body, model: provider.models[body.model] }),
+            body: JSON.stringify(request.body),
             signal: AbortSignal.any([requestSignal, AbortSignal.timeout(provider.timeoutMs)]),
           });
           span.setAttribute("http.response.status_code", response.status);
@@ -452,13 +459,15 @@ async function fetchUpstream(provider, body, requestSignal) {
           span.end();
         }
       });
-      if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
+      if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) {
+        return await adaptProviderResponse(provider, response, body);
+      }
       const delay = retryDelay(response, attempt);
       await response.body?.cancel();
       await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     } catch (error) {
-      if (error.name === "TimeoutError" || requestSignal.aborted || attempt === config.maxRetries) throw error;
+      if (error.statusCode || error.name === "TimeoutError" || requestSignal.aborted || attempt === config.maxRetries) throw error;
       await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)));
     }
   }
@@ -486,6 +495,7 @@ async function fetchWithFallback(model, body, requestSignal) {
       return response;
     } catch (error) {
       if (requestSignal.aborted) throw error;
+      if (error.statusCode) throw error;
       await recordProviderFailure(candidates[index]);
       lastError = error;
     }
