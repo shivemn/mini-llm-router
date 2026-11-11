@@ -27,6 +27,8 @@ Each provider has an in-memory circuit breaker. After `CIRCUIT_BREAKER_FAILURE_T
 
 `RATE_LIMIT_MAX_REQUESTS` limits each router key (or source IP when router authentication is disabled) to a fixed-window request count. The default is 60 requests per 60000 ms. Excess requests receive HTTP 429 with a `Retry-After` header. These in-memory limits apply per process.
 
+Set `REDIS_URL` to share rate-limit counters and circuit-breaker state across router processes. Redis operations use atomic commands/scripts; if the shared store becomes unavailable, chat requests fail closed with HTTP 503. Without `REDIS_URL`, these features use process-local memory. `REDIS_KEY_PREFIX` defaults to `mini-llm-router` to isolate keys when Redis is shared.
+
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 
 Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.
@@ -61,7 +63,7 @@ Copy `.env.example` to `.env`, configure at least one provider, and set a non-em
 docker compose up --build
 ```
 
-Compose binds the published port to `127.0.0.1:3001` on the host. The container listens on its internal network interface and requires the router key. The image runs as the unprivileged `node` user and has a liveness health check.
+Compose starts a Redis service with persistent data for shared rate-limit and circuit-breaker state. It binds the router port to `127.0.0.1:3001` on the host. The container listens on its internal network interface and requires the router key. The image runs as the unprivileged `node` user and has a liveness health check.
 
 ## Try a request
 

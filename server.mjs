@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { createClient } from "redis";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { shutdownTelemetry } from "./instrumentation.mjs";
@@ -73,6 +74,23 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(rateLimitWindowMs) || rateLimitWindowMs < 1000 || rateLimitWindowMs > 3_600_000) {
     throw new Error("RATE_LIMIT_WINDOW_MS must be an integer from 1000 to 3600000.");
   }
+  let redisUrl;
+  if (env.REDIS_URL) {
+    let parsedRedisUrl;
+    try {
+      parsedRedisUrl = new URL(env.REDIS_URL);
+    } catch {
+      throw new Error("REDIS_URL must be a valid Redis connection URL.");
+    }
+    if (!["redis:", "rediss:"].includes(parsedRedisUrl.protocol) || !parsedRedisUrl.hostname) {
+      throw new Error("REDIS_URL must use redis:// or rediss:// and include a host.");
+    }
+    redisUrl = env.REDIS_URL;
+  }
+  const redisKeyPrefix = env.REDIS_KEY_PREFIX || "mini-llm-router";
+  if (redisKeyPrefix.length > 100 || /\s/.test(redisKeyPrefix)) {
+    throw new Error("REDIS_KEY_PREFIX must be at most 100 characters and contain no whitespace.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -118,6 +136,8 @@ function readConfig(env = process.env) {
     circuitOpenMs,
     rateLimitMaxRequests,
     rateLimitWindowMs,
+    redisUrl,
+    redisKeyPrefix,
     providers,
     routerKey,
   };
@@ -126,6 +146,19 @@ function readConfig(env = process.env) {
 const config = {
   ...readConfig(),
 };
+
+const redisClient = config.redisUrl ? createClient({
+  url: config.redisUrl,
+  disableOfflineQueue: true,
+  socket: { connectTimeout: 5000 },
+}) : undefined;
+redisClient?.on("error", () => {
+  console.error(JSON.stringify({ event: "redis_client_error" }));
+});
+if (redisClient) {
+  await redisClient.connect();
+  console.log(JSON.stringify({ event: "redis_connected" }));
+}
 
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -202,9 +235,24 @@ function rateLimitKey(req) {
   return `ip:${req.socket.remoteAddress || "unknown"}`;
 }
 
-function consumeRateLimit(req) {
+async function consumeRateLimit(req) {
   const now = Date.now();
   const key = rateLimitKey(req);
+  if (redisClient) {
+    try {
+      const [countValue, ttlValue] = await redisClient.eval(redisRateLimitScript, {
+        keys: [`${config.redisKeyPrefix}:rate:${key}`],
+        arguments: [String(config.rateLimitWindowMs)],
+      });
+      const count = Number(countValue);
+      if (count > config.rateLimitMaxRequests) {
+        return { allowed: false, retryAfter: Math.max(1, Math.ceil(Number(ttlValue) / 1000)) };
+      }
+      return { allowed: true };
+    } catch {
+      throw redisStateUnavailable();
+    }
+  }
   let bucket = rateLimitBuckets.get(key);
   if (!bucket || now >= bucket.resetAt) {
     if (!bucket && rateLimitBuckets.size >= 10_000) {
@@ -223,6 +271,32 @@ function consumeRateLimit(req) {
   return { allowed: true };
 }
 
+const redisRateLimitScript = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+local ttl = redis.call('PTTL', KEYS[1])
+return { count, ttl }
+`;
+
+function redisStateUnavailable() {
+  const error = new Error("Shared state store is unavailable.");
+  error.statusCode = 503;
+  return error;
+}
+
+function redisProviderKey(providerName, state) {
+  return `${config.redisKeyPrefix}:provider:${encodeURIComponent(providerName)}:${state}`;
+}
+
+async function isProviderCircuitOpen(provider) {
+  if (!redisClient) return circuitFor(provider).openUntil > Date.now();
+  try {
+    return (await redisClient.exists(redisProviderKey(provider.name, "open"))) > 0;
+  } catch {
+    throw redisStateUnavailable();
+  }
+}
+
 function circuitFor(provider) {
   if (!providerCircuits.has(provider.name)) {
     providerCircuits.set(provider.name, { failures: 0, openUntil: 0 });
@@ -230,7 +304,21 @@ function circuitFor(provider) {
   return providerCircuits.get(provider.name);
 }
 
-function recordProviderFailure(provider) {
+async function recordProviderFailure(provider) {
+  if (redisClient) {
+    try {
+      await redisClient.eval(
+        "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],ARGV[2]) end; if n>=tonumber(ARGV[1]) then redis.call('SET',KEYS[2],'1','PX',ARGV[2]); redis.call('DEL',KEYS[1]); return 1 end; return 0",
+        {
+          keys: [redisProviderKey(provider.name, "failures"), redisProviderKey(provider.name, "open")],
+          arguments: [String(config.circuitFailureThreshold), String(config.circuitOpenMs)],
+        },
+      );
+      return;
+    } catch {
+      throw redisStateUnavailable();
+    }
+  }
   const circuit = circuitFor(provider);
   circuit.failures++;
   if (circuit.failures >= config.circuitFailureThreshold) {
@@ -238,7 +326,18 @@ function recordProviderFailure(provider) {
   }
 }
 
-function recordProviderSuccess(provider) {
+async function recordProviderSuccess(provider) {
+  if (redisClient) {
+    try {
+      await redisClient.del([
+        redisProviderKey(provider.name, "failures"),
+        redisProviderKey(provider.name, "open"),
+      ]);
+      return;
+    } catch {
+      throw redisStateUnavailable();
+    }
+  }
   const circuit = circuitFor(provider);
   circuit.failures = 0;
   circuit.openUntil = 0;
@@ -309,14 +408,14 @@ async function fetchWithFallback(model, body, requestSignal) {
   let lastError;
   let openProviders = 0;
   for (let index = 0; index < candidates.length; index++) {
-    if (circuitFor(candidates[index]).openUntil > Date.now()) {
+    if (await isProviderCircuitOpen(candidates[index])) {
       openProviders++;
       continue;
     }
     try {
       const response = await fetchUpstream(candidates[index], body, requestSignal);
-      if (response.status >= 500) recordProviderFailure(candidates[index]);
-      else recordProviderSuccess(candidates[index]);
+      if (response.status >= 500) await recordProviderFailure(candidates[index]);
+      else await recordProviderSuccess(candidates[index]);
       const canFallback = response.status === 429 || retryableStatuses.has(response.status);
       if (canFallback && index < candidates.length - 1) {
         await response.body?.cancel();
@@ -325,7 +424,7 @@ async function fetchWithFallback(model, body, requestSignal) {
       return response;
     } catch (error) {
       if (requestSignal.aborted) throw error;
-      recordProviderFailure(candidates[index]);
+      await recordProviderFailure(candidates[index]);
       lastError = error;
     }
   }
@@ -365,7 +464,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { live: true });
   }
   if (req.method === "GET" && pathname === "/health/ready") {
-    const ready = config.providers.length > 0;
+    const ready = config.providers.length > 0 && (!redisClient || redisClient.isReady);
     return json(res, ready ? 200 : 503, { ready });
   }
   if (req.method === "GET" && pathname === "/metrics") {
@@ -395,7 +494,12 @@ const server = http.createServer(async (req, res) => {
   if (config.providers.length === 0) {
     return json(res, 503, { error: { message: "Configure PROVIDERS_JSON or the legacy UPSTREAM_* settings in .env." } });
   }
-  const rateLimit = consumeRateLimit(req);
+  let rateLimit;
+  try {
+    rateLimit = await consumeRateLimit(req);
+  } catch {
+    return json(res, 503, { error: { message: "Shared rate-limit store is unavailable." } });
+  }
   if (!rateLimit.allowed) {
     res.setHeader("retry-after", String(rateLimit.retryAfter));
     return json(res, 429, { error: { message: "Request rate limit exceeded. Retry after the indicated delay." } });
@@ -484,6 +588,9 @@ function shutdown(signal) {
   console.log(JSON.stringify({ event: "server_shutdown", signal }));
   server.close(async () => {
     await shutdownTelemetry();
+    try {
+      await redisClient?.close();
+    } catch {}
     process.exit(0);
   });
   const forceClose = setTimeout(() => server.closeAllConnections(), 10_000);

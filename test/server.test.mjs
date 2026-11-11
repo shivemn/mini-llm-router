@@ -24,13 +24,13 @@ function listen(server) {
 }
 
 async function waitForHealth(port, child) {
-  for (let attempt = 0; attempt < 50; attempt++) {
+  for (let attempt = 0; attempt < 100; attempt++) {
     if (child.exitCode !== null) throw new Error("Router process exited before becoming ready.");
     try {
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       if (response.ok) return;
     } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Router did not become ready. Child output: ${appOutput}`);
 }
@@ -154,6 +154,7 @@ before(async () => {
       CIRCUIT_BREAKER_OPEN_MS: "1000",
       RATE_LIMIT_MAX_REQUESTS: "20",
       RATE_LIMIT_WINDOW_MS: "60000",
+      REDIS_URL: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -350,6 +351,16 @@ test("rejects partially configured legacy provider settings", () => {
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Set all legacy UPSTREAM_BASE_URL/);
+});
+
+test("rejects an invalid Redis connection URL at startup", () => {
+  const result = spawnSync(process.execPath, ["server.mjs"], {
+    cwd: fileURLToPath(root),
+    env: { ...process.env, REDIS_URL: "http://127.0.0.1:6379" },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /REDIS_URL must use redis:\/\/ or rediss:\/\//);
 });
 
 test("requires router authentication when binding to a non-loopback address", () => {
