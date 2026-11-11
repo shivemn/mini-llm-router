@@ -147,6 +147,8 @@ before(async () => {
       MAX_CONCURRENT_REQUESTS: "1",
       CIRCUIT_BREAKER_FAILURE_THRESHOLD: "1",
       CIRCUIT_BREAKER_OPEN_MS: "1000",
+      RATE_LIMIT_MAX_REQUESTS: "20",
+      RATE_LIMIT_WINDOW_MS: "60000",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -353,4 +355,23 @@ test("opens provider circuits after repeated failures and returns 503 while all 
   const second = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, requestOptions);
   assert.equal(second.status, 503);
   assert.match((await second.json()).error.message, /All providers.*temporarily unavailable/);
+});
+
+test("limits requests per router key and returns a retry delay", async () => {
+  let throttled;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+      body: JSON.stringify({ model: "not-configured", messages: [{ role: "user", content: "rate-test" }] }),
+    });
+    if (response.status === 429) {
+      throttled = response;
+      break;
+    }
+    assert.equal(response.status, 404);
+  }
+  assert.ok(throttled, "expected the configured rate limit to reject a request");
+  assert.ok(Number(throttled.headers.get("retry-after")) >= 1);
+  assert.match((await throttled.json()).error.message, /rate limit exceeded/i);
 });

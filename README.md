@@ -25,6 +25,8 @@ The server binds to `127.0.0.1:3001` by default, so it is available only on your
 
 Each provider has an in-memory circuit breaker. After `CIRCUIT_BREAKER_FAILURE_THRESHOLD` server failures or connection errors (default 3), it is skipped for `CIRCUIT_BREAKER_OPEN_MS` (default 30000 ms) while other configured providers are tried. When all providers for a model are paused, requests receive HTTP 503. Circuit state resets when a provider responds without a server error.
 
+`RATE_LIMIT_MAX_REQUESTS` limits each router key (or source IP when router authentication is disabled) to a fixed-window request count. The default is 60 requests per 60000 ms. Excess requests receive HTTP 429 with a `Retry-After` header. These in-memory limits apply per process.
+
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 
 Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.

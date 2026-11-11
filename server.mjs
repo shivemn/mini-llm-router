@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -61,6 +61,14 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(circuitOpenMs) || circuitOpenMs < 1000 || circuitOpenMs > 300000) {
     throw new Error("CIRCUIT_BREAKER_OPEN_MS must be an integer from 1000 to 300000.");
   }
+  const rateLimitMaxRequests = Number(env.RATE_LIMIT_MAX_REQUESTS ?? "60");
+  if (!Number.isInteger(rateLimitMaxRequests) || rateLimitMaxRequests < 1 || rateLimitMaxRequests > 100_000) {
+    throw new Error("RATE_LIMIT_MAX_REQUESTS must be an integer from 1 to 100000.");
+  }
+  const rateLimitWindowMs = Number(env.RATE_LIMIT_WINDOW_MS ?? "60000");
+  if (!Number.isInteger(rateLimitWindowMs) || rateLimitWindowMs < 1000 || rateLimitWindowMs > 3_600_000) {
+    throw new Error("RATE_LIMIT_WINDOW_MS must be an integer from 1000 to 3600000.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -104,6 +112,8 @@ function readConfig(env = process.env) {
     maxConcurrentRequests,
     circuitFailureThreshold,
     circuitOpenMs,
+    rateLimitMaxRequests,
+    rateLimitWindowMs,
     providers,
     routerKey,
   };
@@ -142,6 +152,35 @@ async function readJson(req) {
 const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
 let activeRequests = 0;
 const providerCircuits = new Map();
+const rateLimitBuckets = new Map();
+
+function rateLimitKey(req) {
+  if (config.routerKey) {
+    return `key:${createHash("sha256").update(req.headers.authorization || "").digest("hex")}`;
+  }
+  return `ip:${req.socket.remoteAddress || "unknown"}`;
+}
+
+function consumeRateLimit(req) {
+  const now = Date.now();
+  const key = rateLimitKey(req);
+  let bucket = rateLimitBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    if (!bucket && rateLimitBuckets.size >= 10_000) {
+      for (const [candidate, value] of rateLimitBuckets) {
+        if (now >= value.resetAt) rateLimitBuckets.delete(candidate);
+      }
+      if (rateLimitBuckets.size >= 10_000) rateLimitBuckets.delete(rateLimitBuckets.keys().next().value);
+    }
+    bucket = { count: 0, resetAt: now + config.rateLimitWindowMs };
+    rateLimitBuckets.set(key, bucket);
+  }
+  if (bucket.count >= config.rateLimitMaxRequests) {
+    return { allowed: false, retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
+  }
+  bucket.count++;
+  return { allowed: true };
+}
 
 function circuitFor(provider) {
   if (!providerCircuits.has(provider.name)) {
@@ -287,6 +326,11 @@ const server = http.createServer(async (req, res) => {
   if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
   if (config.providers.length === 0) {
     return json(res, 503, { error: { message: "Configure PROVIDERS_JSON or the legacy UPSTREAM_* settings in .env." } });
+  }
+  const rateLimit = consumeRateLimit(req);
+  if (!rateLimit.allowed) {
+    res.setHeader("retry-after", String(rateLimit.retryAfter));
+    return json(res, 429, { error: { message: "Request rate limit exceeded. Retry after the indicated delay." } });
   }
   if (activeRequests >= config.maxConcurrentRequests) {
     res.setHeader("retry-after", "1");
