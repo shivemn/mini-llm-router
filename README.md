@@ -47,6 +47,8 @@ Run the automated checks with:
 npm test
 ```
 
+GitHub Actions runs this suite and builds the Docker image on pushes and pull requests.
+
 ## Run with Docker Compose
 
 Copy `.env.example` to `.env`, configure at least one provider, and set a non-empty `ROUTER_API_KEY`. Then run:
