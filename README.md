@@ -83,7 +83,7 @@ Copy `.env.example` to `.env`, add your OpenRouter key, and replace `GRAFANA_ADM
 docker compose up --build
 ```
 
-Compose starts Redis with persistent shared rate-limit and circuit state, Prometheus with 15-day metric retention, Grafana with a provisioned router dashboard, an OpenTelemetry Collector, and Tempo with local trace storage for development. Grafana is available at `http://127.0.0.1:3000` (the default login is `admin`; use the password from `.env`), and Prometheus at `http://127.0.0.1:9090`. The router and monitoring UIs bind to loopback on the host. Tempo uses local filesystem storage and 24-hour retention here; use object storage and appropriate retention for production. The router image runs as the unprivileged `node` user and has a liveness health check.
+Compose starts Redis with persistent shared rate-limit and circuit state, Prometheus with 15-day metric retention, Grafana with a provisioned router dashboard, an OpenTelemetry Collector, and Tempo with local trace storage for development. Grafana is available at `http://127.0.0.1:3000` (the default login is `admin`; use the password from `.env`), and Prometheus at `http://127.0.0.1:9090`. The router and monitoring UIs bind to loopback on the host. Tempo's local filesystem storage is for development; use object storage and appropriate retention for production. The router image runs as the unprivileged `node` user and has a liveness health check.
 
 ## Try a request
 
