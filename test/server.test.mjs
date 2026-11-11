@@ -13,6 +13,7 @@ let upstreamPort;
 let upstreamRequest;
 let transientFailures = 0;
 let upstreamPaths = [];
+let appOutput = "";
 
 function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -28,7 +29,7 @@ async function waitForHealth(port, child) {
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("Router did not become ready.");
+  throw new Error(`Router did not become ready. Child output: ${appOutput}`);
 }
 
 before(async () => {
@@ -92,8 +93,10 @@ before(async () => {
       }),
       ROUTER_API_KEY: "router-secret",
     },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  app.stdout.setEncoding("utf8").on("data", (chunk) => { appOutput += chunk; });
+  app.stderr.setEncoding("utf8").on("data", (chunk) => { appOutput += chunk; });
   await waitForHealth(appPort, app);
 });
 
