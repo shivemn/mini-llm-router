@@ -1,0 +1,10 @@
+services:
+  router:
+    build: .
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:3001:3001"
+    restart: unless-stopped

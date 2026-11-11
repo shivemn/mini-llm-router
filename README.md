@@ -47,6 +47,16 @@ Run the automated checks with:
 npm test
 ```
 
+## Run with Docker Compose
+
+Copy `.env.example` to `.env`, configure at least one provider, and set a non-empty `ROUTER_API_KEY`. Then run:
+
+```powershell
+docker compose up --build
+```
+
+Compose binds the published port to `127.0.0.1:3001` on the host. The container listens on its internal network interface and requires the router key. The image runs as the unprivileged `node` user and has a liveness health check.
+
 ## Try a request
 
 In a second PowerShell window:
