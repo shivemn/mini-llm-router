@@ -43,6 +43,20 @@ before(async () => {
       res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
       return;
     }
+    if (upstreamRequest.body.messages[0]?.content === "timeout-fallback" && req.url.startsWith("/v1/")) {
+      setTimeout(() => {
+        if (!res.destroyed) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ choices: [{ message: { content: "late primary" } }] }));
+        }
+      }, 200);
+      return;
+    }
+    if (upstreamRequest.body.messages[0]?.content === "timeout-fallback" && req.url.startsWith("/backup/")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "fast backup" } }] }));
+      return;
+    }
     if (upstreamRequest.body.messages[0]?.content === "fallback-test" && req.url.startsWith("/backup/")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { content: "backup response" } }] }));
@@ -83,11 +97,13 @@ before(async () => {
         local: {
           baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
           apiKey: "provider-secret",
+          timeoutMs: 100,
           models: { fast: "configured-model" },
         },
         backup: {
           baseUrl: `http://127.0.0.1:${upstreamPort}/backup/v1`,
           apiKey: "backup-secret",
+          timeoutMs: 1_000,
           models: { fast: "backup-model" },
         },
       }),
@@ -187,6 +203,16 @@ test("falls back to the next provider for a throttled model", async () => {
     "/v1/chat/completions",
     "/backup/v1/chat/completions",
   ]);
+});
+
+test("uses the next provider when a provider exceeds its timeout", async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "timeout-fallback" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { choices: [{ message: { content: "fast backup" } }] });
 });
 
 test("passes server-sent event responses through for stream requests", async () => {

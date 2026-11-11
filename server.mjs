@@ -19,6 +19,10 @@ function normalizeProvider(name, value) {
   if (typeof value.apiKey !== "string" || !value.apiKey.trim()) {
     throw new Error(`Provider '${name}' apiKey must be a non-empty string.`);
   }
+  const timeoutMs = value.timeoutMs ?? 120_000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
+    throw new Error(`Provider '${name}' timeoutMs must be an integer from 100 to 300000.`);
+  }
   if (!value.models || typeof value.models !== "object" || Array.isArray(value.models)) {
     throw new Error(`Provider '${name}' models must map public model names to upstream model names.`);
   }
@@ -30,6 +34,7 @@ function normalizeProvider(name, value) {
     name,
     baseUrl: value.baseUrl.replace(/\/+$/, ""),
     apiKey: value.apiKey,
+    timeoutMs,
     models: Object.fromEntries(models),
   };
 }
@@ -146,7 +151,7 @@ async function fetchUpstream(provider, body) {
           "content-type": "application/json",
         },
         body: JSON.stringify({ ...body, model: provider.models[body.model] }),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(provider.timeoutMs),
       });
       if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
       const delay = retryDelay(response, attempt);
