@@ -10,7 +10,7 @@ import { adaptProviderResponse, buildProviderRequest } from "./providers/adapter
 
 const tracer = trace.getTracer("mini-llm-router");
 
-function normalizeProvider(name, value) {
+function normalizeProvider(name, value, env = process.env) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`Provider '${name}' must be an object.`);
   }
@@ -25,11 +25,19 @@ function normalizeProvider(name, value) {
   }
   const hasInlineKey = typeof value.apiKey === "string" && Boolean(value.apiKey.trim());
   const hasSecretId = typeof value.apiKeySecretId === "string" && Boolean(value.apiKeySecretId.trim());
-  if (hasInlineKey === hasSecretId) {
-    throw new Error(`Provider '${name}' must set exactly one of apiKey or apiKeySecretId.`);
+  const hasKeyEnvName = typeof value.apiKeyEnv === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.apiKeyEnv);
+  if (value.apiKeyEnv !== undefined && !hasKeyEnvName) {
+    throw new Error(`Provider '${name}' apiKeyEnv must be a valid environment variable name.`);
+  }
+  const hasEnvKey = hasKeyEnvName && typeof env[value.apiKeyEnv] === "string" && Boolean(env[value.apiKeyEnv].trim());
+  if ([hasInlineKey, hasSecretId, hasKeyEnvName].filter(Boolean).length !== 1) {
+    throw new Error(`Provider '${name}' must set exactly one of apiKey, apiKeyEnv, or apiKeySecretId.`);
   }
   if (value.apiKeySecretId !== undefined && !hasSecretId) {
     throw new Error(`Provider '${name}' apiKeySecretId must be a non-empty secret name or ARN.`);
+  }
+  if (hasKeyEnvName && !hasEnvKey) {
+    throw new Error(`Provider '${name}' environment variable '${value.apiKeyEnv}' is missing or empty.`);
   }
   const protocol = value.protocol || "openai-compatible";
   if (!["openai-compatible", "anthropic", "gemini"].includes(protocol)) {
@@ -50,7 +58,7 @@ function normalizeProvider(name, value) {
     name,
     protocol,
     baseUrl: value.baseUrl.replace(/\/+$/, ""),
-    apiKey: hasInlineKey ? value.apiKey : undefined,
+    apiKey: hasInlineKey ? value.apiKey : hasEnvKey ? env[value.apiKeyEnv] : undefined,
     apiKeySecretId: hasSecretId ? value.apiKeySecretId : undefined,
     timeoutMs,
     models: Object.fromEntries(models),
@@ -116,7 +124,7 @@ function readConfig(env = process.env) {
     if (!parsedProviders || typeof parsedProviders !== "object" || Array.isArray(parsedProviders)) {
       throw new Error("PROVIDERS_JSON must be a valid JSON object containing provider configurations.");
     }
-    providers = Object.entries(parsedProviders).map(([name, value]) => normalizeProvider(name, value));
+    providers = Object.entries(parsedProviders).map(([name, value]) => normalizeProvider(name, value, env));
     if (providers.length === 0) {
       throw new Error("PROVIDERS_JSON must contain at least one provider.");
     }

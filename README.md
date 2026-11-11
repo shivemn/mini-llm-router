@@ -1,17 +1,18 @@
 # Mini LLM Router
 
-A small local project that accepts OpenAI-compatible chat requests and routes each requested model name to a configured upstream provider and model ID. It is a learning starter: it does not yet include a dashboard or encrypted key storage.
+A local LLM router that accepts OpenAI-compatible chat requests and routes each requested model name to a configured provider and model ID. The default example uses OpenRouter's free model router; the project also includes Redis shared state, metrics, traces, and a Grafana dashboard.
 
 ## Requirements
 
 - Node.js 20 or newer
-- An API key for an OpenAI-compatible provider (the provider may charge for usage)
+- An OpenRouter API key for its currently free models (no subscription or card required to start; free usage is rate-limited)
 
 ## Run on Windows PowerShell
 
 1. Copy `.env.example` to `.env`.
-2. Edit `.env` and set `PROVIDERS_JSON` with provider names, base URLs, AWS secret IDs, and public-name-to-upstream-model mappings. Keep `.env` private; it is ignored by Git.
-3. In this folder, run:
+2. Create a key at [OpenRouter](https://openrouter.ai/keys) and set `OPENROUTER_API_KEY` in `.env`. The example maps the public model name `free` to `openrouter/free`, which selects an available free model.
+3. Keep `.env` private; it is ignored by Git.
+4. In this folder, run:
 
    ```powershell
    npm start
@@ -19,23 +20,17 @@ A small local project that accepts OpenAI-compatible chat requests and routes ea
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token. Binding to any non-loopback `HOST` requires `ROUTER_API_KEY` at startup.
 
-### AWS Secrets Manager
+### Optional AWS Secrets Manager
 
-Provider configuration accepts exactly one of `apiKey` or `apiKeySecretId`. The example uses `apiKeySecretId` so API credentials stay out of provider configuration. The router reads each referenced secret once during startup using the AWS SDK's default credential provider chain, keeps it in process memory, and fails startup if it cannot retrieve the secret. Restart the router after rotating a secret. Store either the API key as the whole SecretString or JSON such as `{"apiKey":"..."}`. Set `AWS_REGION` if it is not already available from the AWS environment. Grant the runtime identity only `secretsmanager:GetSecretValue` for the required secret ARNs; an example policy is in [aws/secrets-manager-read-policy.example.json](aws/secrets-manager-read-policy.example.json).
+The default OpenRouter setup reads `OPENROUTER_API_KEY` from `.env` and does not call AWS. Secrets Manager is optional and may incur charges (AWS lists $0.40 per secret per month plus API calls); skip this integration if you need to keep the setup free. [AWS pricing](https://aws.amazon.com/secrets-manager/pricing/)
 
-For local development, use an AWS CLI profile rather than putting access keys in `.env`. Docker Compose mounts the Windows user's `.aws` directory read-only into the router and uses `AWS_PROFILE`; this supports the AWS CLI's temporary IAM Identity Center credentials. For deployed workloads, use the platform's IAM role instead of a local profile. Create a profile and sign in with:
-
-```powershell
-aws configure sso --profile mini-router
-aws sso login --profile mini-router
-aws sts get-caller-identity --profile mini-router
-```
-
-Then create the sample secret:
+If you choose to use Secrets Manager, provider configuration accepts `apiKeySecretId`, and the router reads each secret once during startup. Compose mounts the Windows user's `.aws` directory read-only only when using the AWS override file:
 
 ```powershell
-aws secretsmanager create-secret --name mini-llm-router/openai --secret-string '{"apiKey":"replace-with-provider-key"}' --region us-east-1
+docker compose -f compose.yaml -f compose.aws.yaml up --build
 ```
+
+The AWS runtime identity needs `secretsmanager:GetSecretValue`; see the [example IAM policy](aws/secrets-manager-read-policy.example.json). `apiKeyEnv` is also supported to read a key from a named local environment variable.
 
 ### Provider protocols
 
@@ -66,7 +61,8 @@ On Ctrl+C or SIGTERM, the server stops accepting new connections and allows acti
 Example provider configuration:
 
 ```dotenv
-PROVIDERS_JSON={"openai":{"baseUrl":"https://api.openai.com/v1","apiKey":"your-provider-key","timeoutMs":30000,"models":{"fast":"gpt-4o-mini"}},"local":{"baseUrl":"http://127.0.0.1:11434/v1","apiKey":"local-token","models":{"local-model":"llama3.1"}}}
+OPENROUTER_API_KEY=your-openrouter-key
+PROVIDERS_JSON={"openrouter":{"protocol":"openai-compatible","baseUrl":"https://openrouter.ai/api/v1","apiKeyEnv":"OPENROUTER_API_KEY","models":{"free":"openrouter/free"}}}
 ```
 
 Clients can request `fast` or `local-model`; the router sends the mapped upstream model ID. `timeoutMs` is optional per provider, defaults to 120000, and accepts values from 100 to 300000. `GET /v1/models` lists configured public names. If multiple providers define the same public model name, the router tries them in configuration order and falls back on rate limits, temporary server failures, or connection errors. The legacy `UPSTREAM_BASE_URL`, `UPSTREAM_API_KEY`, and `UPSTREAM_MODEL` settings remain supported as a single-provider configuration; if you use them, set all three. The server validates `PORT` and each provider URL, rejects URLs with embedded credentials, requires JSON request content, and enforces a 1 MB request body limit. Leaving provider settings blank is allowed; chat requests return a configuration error until they are set.
@@ -81,7 +77,7 @@ GitHub Actions runs this suite and builds the Docker image on pushes and pull re
 
 ## Run with Docker Compose
 
-Copy `.env.example` to `.env`, configure at least one provider and AWS credentials, set a non-empty `ROUTER_API_KEY`, and replace `GRAFANA_ADMIN_PASSWORD`. Then run:
+Copy `.env.example` to `.env`, add your OpenRouter key, and replace `GRAFANA_ADMIN_PASSWORD`. AWS credentials are not needed for the free OpenRouter setup. Then run:
 
 ```powershell
 docker compose up --build
@@ -96,13 +92,13 @@ In a second PowerShell window:
 ```powershell
 $headers = @{ Authorization = "Bearer replace-with-your-router-key" }
 $body = @{
-  model = "any-name"
+  model = "free"
   messages = @(@{ role = "user"; content = "Explain APIs in one sentence." })
 } | ConvertTo-Json -Depth 5
 Invoke-RestMethod -Uri http://127.0.0.1:3001/v1/chat/completions -Method Post -Headers $headers -ContentType "application/json" -Body $body
 ```
 
-If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `model` to one of the public names configured in `PROVIDERS_JSON` (or to `UPSTREAM_MODEL` in legacy mode).
+If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `model` to one of the public names configured in `PROVIDERS_JSON` (the default free route is `free`).
 
 ## Endpoints
 

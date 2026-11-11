@@ -1,0 +1,12 @@
+services:
+  router:
+    environment:
+      AWS_PROFILE: ${AWS_PROFILE:-mini-router}
+      AWS_CONFIG_FILE: /home/node/.aws/config
+      AWS_SHARED_CREDENTIALS_FILE: /home/node/.aws/credentials
+      AWS_SDK_LOAD_CONFIG: "1"
+    volumes:
+      - type: bind
+        source: ${USERPROFILE}/.aws
+        target: /home/node/.aws
+        read_only: true
