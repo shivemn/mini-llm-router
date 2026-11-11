@@ -183,6 +183,19 @@ test("exposes liveness and readiness probes", async () => {
   assert.deepEqual(await ready.json(), { ready: true });
 });
 
+test("protects and exports Prometheus request metrics", async () => {
+  const denied = await fetch(`http://127.0.0.1:${appPort}/metrics`);
+  assert.equal(denied.status, 401);
+  const response = await fetch(`http://127.0.0.1:${appPort}/metrics`, {
+    headers: { authorization: "Bearer router-secret" },
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/plain/);
+  const body = await response.text();
+  assert.match(body, /mini_router_http_requests_total/);
+  assert.match(body, /route="\/health\/live"/);
+});
+
 test("lists the public model aliases", async () => {
   const response = await fetch(`http://127.0.0.1:${appPort}/v1/models`, {
     headers: { authorization: "Bearer router-secret" },

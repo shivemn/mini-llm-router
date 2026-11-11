@@ -67,6 +67,7 @@ If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `m
 - `GET /health` — local status and whether provider settings are present.
 - `GET /health/live` — process liveness probe.
 - `GET /health/ready` — readiness probe; returns HTTP 503 until a provider is configured.
+- `GET /metrics` — Prometheus text metrics for request counts and durations; protected by `ROUTER_API_KEY` when configured.
 - `GET /v1/models` — configured public model names in OpenAI-style list format.
 - `POST /v1/chat/completions` — forwards chat requests and provider responses.
 

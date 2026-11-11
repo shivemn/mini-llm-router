@@ -153,6 +153,43 @@ const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
 let activeRequests = 0;
 const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
+const requestMetrics = new Map();
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/chat/completions", "/metrics"]);
+
+function metricRoute(pathname) {
+  return knownMetricRoutes.has(pathname) ? pathname : "/other";
+}
+
+function recordRequestMetric(method, route, status, durationMs) {
+  const key = JSON.stringify([method, route, status]);
+  const metric = requestMetrics.get(key) || { method, route, status, count: 0, durationSeconds: 0 };
+  metric.count++;
+  metric.durationSeconds += durationMs / 1000;
+  requestMetrics.set(key, metric);
+}
+
+function renderMetrics() {
+  const lines = [
+    "# HELP mini_router_http_requests_total Completed HTTP requests.",
+    "# TYPE mini_router_http_requests_total counter",
+  ];
+  for (const metric of requestMetrics.values()) {
+    const labels = `method="${metric.method}",route="${metric.route}",status="${metric.status}"`;
+    lines.push(`mini_router_http_requests_total{${labels}} ${metric.count}`);
+  }
+  lines.push(
+    "# HELP mini_router_request_duration_seconds_sum Total duration of completed HTTP requests.",
+    "# TYPE mini_router_request_duration_seconds_sum counter",
+    "# HELP mini_router_request_duration_seconds_count Number of completed HTTP requests included in the duration sum.",
+    "# TYPE mini_router_request_duration_seconds_count counter",
+  );
+  for (const metric of requestMetrics.values()) {
+    const labels = `method="${metric.method}",route="${metric.route}"`;
+    lines.push(`mini_router_request_duration_seconds_sum{${labels}} ${metric.durationSeconds.toFixed(6)}`);
+    lines.push(`mini_router_request_duration_seconds_count{${labels}} ${metric.count}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
 
 function rateLimitKey(req) {
   if (config.routerKey) {
@@ -288,6 +325,8 @@ const server = http.createServer(async (req, res) => {
     if (!res.writableEnded) requestAbort.abort();
   });
   res.once("finish", () => {
+    const metricMethod = ["GET", "POST"].includes(req.method) ? req.method : "OTHER";
+    recordRequestMetric(metricMethod, metricRoute(pathname), res.statusCode, performance.now() - startedAt);
     console.log(JSON.stringify({
       event: "request_complete",
       requestId,
@@ -304,6 +343,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && pathname === "/health/ready") {
     const ready = config.providers.length > 0;
     return json(res, ready ? 200 : 503, { ready });
+  }
+  if (req.method === "GET" && pathname === "/metrics") {
+    if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
+    res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+    return res.end(renderMetrics());
   }
   if (req.method === "GET" && pathname === "/health") {
     return json(res, 200, { ok: true, configured: config.providers.length > 0 });
