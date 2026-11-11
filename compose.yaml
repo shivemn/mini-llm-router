@@ -6,8 +6,17 @@ services:
     environment:
       HOST: 0.0.0.0
       REDIS_URL: redis://redis:6379
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_CONFIG_FILE: /home/node/.aws/config
+      AWS_SHARED_CREDENTIALS_FILE: /home/node/.aws/credentials
+      AWS_SDK_LOAD_CONFIG: "1"
       OTEL_SERVICE_NAME: mini-llm-router
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    volumes:
+      - type: bind
+        source: ${USERPROFILE}/.aws
+        target: /home/node/.aws
+        read_only: true
     ports:
       - "127.0.0.1:3001:3001"
     depends_on:

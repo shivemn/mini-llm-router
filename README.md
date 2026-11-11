@@ -23,7 +23,15 @@ The server binds to `127.0.0.1:3001` by default, so it is available only on your
 
 Provider configuration accepts exactly one of `apiKey` or `apiKeySecretId`. The example uses `apiKeySecretId` so API credentials stay out of provider configuration. The router reads each referenced secret once during startup using the AWS SDK's default credential provider chain, keeps it in process memory, and fails startup if it cannot retrieve the secret. Restart the router after rotating a secret. Store either the API key as the whole SecretString or JSON such as `{"apiKey":"..."}`. Set `AWS_REGION` if it is not already available from the AWS environment. Grant the runtime identity only `secretsmanager:GetSecretValue` for the required secret ARNs; an example policy is in [aws/secrets-manager-read-policy.example.json](aws/secrets-manager-read-policy.example.json).
 
-For a local host run, configure the AWS CLI credentials/profile before `npm start`. For Docker Compose, provide temporary `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and (for assumed roles) `AWS_SESSION_TOKEN` values in the ignored `.env`; the Compose `env_file` passes these into the router. For deployed workloads, use the platform's IAM role instead of long-lived access keys. Create the sample secret with:
+For local development, use an AWS CLI profile rather than putting access keys in `.env`. Docker Compose mounts the Windows user's `.aws` directory read-only into the router and uses `AWS_PROFILE`; this supports the AWS CLI's temporary IAM Identity Center credentials. For deployed workloads, use the platform's IAM role instead of a local profile. Create a profile and sign in with:
+
+```powershell
+aws configure sso --profile mini-router
+aws sso login --profile mini-router
+aws sts get-caller-identity --profile mini-router
+```
+
+Then create the sample secret:
 
 ```powershell
 aws secretsmanager create-secret --name mini-llm-router/openai --secret-string '{"apiKey":"replace-with-provider-key"}' --region us-east-1
