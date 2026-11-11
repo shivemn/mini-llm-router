@@ -214,6 +214,13 @@ const server = http.createServer(async (req, res) => {
     }));
   });
 
+  if (req.method === "GET" && pathname === "/health/live") {
+    return json(res, 200, { live: true });
+  }
+  if (req.method === "GET" && pathname === "/health/ready") {
+    const ready = config.providers.length > 0;
+    return json(res, ready ? 200 : 503, { ready });
+  }
   if (req.method === "GET" && pathname === "/health") {
     return json(res, 200, { ok: true, configured: config.providers.length > 0 });
   }

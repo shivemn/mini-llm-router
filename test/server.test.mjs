@@ -153,6 +153,15 @@ test("requires the router key for protected endpoints", async () => {
   assert.match(response.headers.get("x-request-id"), /^[0-9a-f-]{36}$/i);
 });
 
+test("exposes liveness and readiness probes", async () => {
+  const live = await fetch(`http://127.0.0.1:${appPort}/health/live`);
+  assert.equal(live.status, 200);
+  assert.deepEqual(await live.json(), { live: true });
+  const ready = await fetch(`http://127.0.0.1:${appPort}/health/ready`);
+  assert.equal(ready.status, 200);
+  assert.deepEqual(await ready.json(), { ready: true });
+});
+
 test("lists the public model aliases", async () => {
   const response = await fetch(`http://127.0.0.1:${appPort}/v1/models`, {
     headers: { authorization: "Bearer router-secret" },
