@@ -14,6 +14,8 @@ let upstreamRequest;
 let transientFailures = 0;
 let upstreamPaths = [];
 let appOutput = "";
+let waitForCancelledUpstream;
+let upstreamResponseClosed;
 
 function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -38,6 +40,11 @@ before(async () => {
     for await (const chunk of req) raw += chunk;
     upstreamRequest = { url: req.url, authorization: req.headers.authorization, body: JSON.parse(raw) };
     upstreamPaths.push(req.url);
+    if (upstreamRequest.body.messages[0]?.content === "cancel-test") {
+      upstreamResponseClosed = new Promise((resolve) => res.once("close", resolve));
+      waitForCancelledUpstream?.();
+      return;
+    }
     if (upstreamRequest.body.stream === true) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
@@ -224,6 +231,26 @@ test("passes server-sent event responses through for stream requests", async () 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /text\/event-stream/);
   assert.equal(await response.text(), 'data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
+});
+
+test("aborts the upstream request when the client disconnects", async () => {
+  const requestArrived = new Promise((resolve) => { waitForCancelledUpstream = resolve; });
+  const clientRequest = http.request({
+    hostname: "127.0.0.1",
+    port: appPort,
+    path: "/v1/chat/completions",
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+  }, (response) => response.resume());
+  clientRequest.on("error", () => {});
+  clientRequest.end(JSON.stringify({ model: "fast", messages: [{ role: "user", content: "cancel-test" }] }));
+  await requestArrived;
+  clientRequest.destroy();
+  const cancelled = await Promise.race([
+    upstreamResponseClosed.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1_000)),
+  ]);
+  assert.equal(cancelled, true);
 });
 
 test("rejects invalid port configuration at startup", () => {

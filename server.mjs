@@ -141,7 +141,7 @@ function retryDelay(response, attempt) {
   return 100 * (2 ** attempt);
 }
 
-async function fetchUpstream(provider, body) {
+async function fetchUpstream(provider, body, requestSignal) {
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
       const response = await fetch(`${provider.baseUrl}/chat/completions`, {
@@ -151,7 +151,7 @@ async function fetchUpstream(provider, body) {
           "content-type": "application/json",
         },
         body: JSON.stringify({ ...body, model: provider.models[body.model] }),
-        signal: AbortSignal.timeout(provider.timeoutMs),
+        signal: AbortSignal.any([requestSignal, AbortSignal.timeout(provider.timeoutMs)]),
       });
       if (!retryableStatuses.has(response.status) || attempt === config.maxRetries) return response;
       const delay = retryDelay(response, attempt);
@@ -159,19 +159,19 @@ async function fetchUpstream(provider, body) {
       await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     } catch (error) {
-      if (error.name === "TimeoutError" || attempt === config.maxRetries) throw error;
+      if (error.name === "TimeoutError" || requestSignal.aborted || attempt === config.maxRetries) throw error;
       await new Promise((resolve) => setTimeout(resolve, 100 * (2 ** attempt)));
     }
   }
   throw new Error("Upstream retries exhausted.");
 }
 
-async function fetchWithFallback(model, body) {
+async function fetchWithFallback(model, body, requestSignal) {
   const candidates = config.providers.filter((provider) => Object.hasOwn(provider.models, model));
   let lastError;
   for (let index = 0; index < candidates.length; index++) {
     try {
-      const response = await fetchUpstream(candidates[index], body);
+      const response = await fetchUpstream(candidates[index], body, requestSignal);
       const canFallback = response.status === 429 || retryableStatuses.has(response.status);
       if (canFallback && index < candidates.length - 1) {
         await response.body?.cancel();
@@ -191,7 +191,12 @@ const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
   const requestId = randomUUID();
   const startedAt = performance.now();
+  const requestAbort = new AbortController();
   res.setHeader("x-request-id", requestId);
+  req.once("aborted", () => requestAbort.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) requestAbort.abort();
+  });
   res.once("finish", () => {
     console.log(JSON.stringify({
       event: "request_complete",
@@ -246,7 +251,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    const upstream = await fetchWithFallback(body.model, body);
+    const upstream = await fetchWithFallback(body.model, body, requestAbort.signal);
     const contentType = upstream.headers.get("content-type") || "application/json";
     if (body.stream === true) {
       res.writeHead(upstream.status, { "content-type": contentType });
@@ -258,6 +263,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(upstream.status, { "content-type": contentType });
     res.end(responseBody);
   } catch (error) {
+    if (requestAbort.signal.aborted || res.destroyed) return;
     if (res.headersSent) {
       res.destroy(error);
       return;
