@@ -6,11 +6,15 @@ services:
     environment:
       HOST: 0.0.0.0
       REDIS_URL: redis://redis:6379
+      OTEL_SERVICE_NAME: mini-llm-router
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports:
       - "127.0.0.1:3001:3001"
     depends_on:
       redis:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   redis:
@@ -25,5 +29,60 @@ services:
       retries: 10
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=15d"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    secrets:
+      - router_api_key
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - router
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.3.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-this-password}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
 volumes:
   redis-data:
+  prometheus-data:
+  grafana-data:
+  tempo-data:
+
+secrets:
+  router_api_key:
+    environment: ROUTER_API_KEY

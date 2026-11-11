@@ -37,6 +37,8 @@ Each response includes an `X-Request-ID` header. The server writes one JSON log 
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector URL to enable traces; leave it blank to keep tracing disabled. The router creates spans for provider selection and individual provider attempts, and the HTTP and `fetch` instrumentations capture inbound and outbound request spans. Trace attributes include provider and model names, status, and attempt number; prompts and API keys are not recorded. The startup command enables the OpenTelemetry ESM loader required by this project's module format. See the [OpenTelemetry Node.js guide](https://opentelemetry.io/docs/languages/js/getting-started/nodejs/) and [ESM support notes](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/esm-support.md).
 
+The `/metrics` endpoint exposes Prometheus request counters and duration histograms with bounded routes and status labels. When `ROUTER_API_KEY` is set, metrics require that same key; Compose passes it to Prometheus through a mounted secret. The histogram supports Prometheus percentile calculations such as p50 and p95.
+
 On Ctrl+C or SIGTERM, the server stops accepting new connections and allows active requests up to 10 seconds to finish before closing them.
 
 Example provider configuration:
@@ -57,13 +59,13 @@ GitHub Actions runs this suite and builds the Docker image on pushes and pull re
 
 ## Run with Docker Compose
 
-Copy `.env.example` to `.env`, configure at least one provider, and set a non-empty `ROUTER_API_KEY`. Then run:
+Copy `.env.example` to `.env`, configure at least one provider, set a non-empty `ROUTER_API_KEY`, and replace `GRAFANA_ADMIN_PASSWORD`. Then run:
 
 ```powershell
 docker compose up --build
 ```
 
-Compose starts a Redis service with persistent data for shared rate-limit and circuit-breaker state. It binds the router port to `127.0.0.1:3001` on the host. The container listens on its internal network interface and requires the router key. The image runs as the unprivileged `node` user and has a liveness health check.
+Compose starts Redis with persistent shared rate-limit and circuit state, Prometheus with 15-day metric retention, Grafana with a provisioned router dashboard, an OpenTelemetry Collector, and Tempo with local trace storage for development. Grafana is available at `http://127.0.0.1:3000` (the default login is `admin`; use the password from `.env`), and Prometheus at `http://127.0.0.1:9090`. The router and monitoring UIs bind to loopback on the host. Tempo uses local filesystem storage and 24-hour retention here; use object storage and appropriate retention for production. The router image runs as the unprivileged `node` user and has a liveness health check.
 
 ## Try a request
 

@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: Mini LLM Router
+    orgId: 1
+    folder: Mini LLM Router
+    type: file
+    disableDeletion: true
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

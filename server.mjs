@@ -191,6 +191,7 @@ let activeRequests = 0;
 const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
 const requestMetrics = new Map();
+const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/chat/completions", "/metrics"]);
 
 function metricRoute(pathname) {
@@ -199,9 +200,11 @@ function metricRoute(pathname) {
 
 function recordRequestMetric(method, route, status, durationMs) {
   const key = JSON.stringify([method, route, status]);
-  const metric = requestMetrics.get(key) || { method, route, status, count: 0, durationSeconds: 0 };
+  const metric = requestMetrics.get(key) || { method, route, status, count: 0, durationSeconds: 0, buckets: Array(durationBuckets.length).fill(0) };
   metric.count++;
-  metric.durationSeconds += durationMs / 1000;
+  const durationSeconds = durationMs / 1000;
+  metric.durationSeconds += durationSeconds;
+  durationBuckets.forEach((bound, index) => { if (durationSeconds <= bound) metric.buckets[index]++; });
   requestMetrics.set(key, metric);
 }
 
@@ -215,15 +218,26 @@ function renderMetrics() {
     lines.push(`mini_router_http_requests_total{${labels}} ${metric.count}`);
   }
   lines.push(
-    "# HELP mini_router_request_duration_seconds_sum Total duration of completed HTTP requests.",
-    "# TYPE mini_router_request_duration_seconds_sum counter",
-    "# HELP mini_router_request_duration_seconds_count Number of completed HTTP requests included in the duration sum.",
-    "# TYPE mini_router_request_duration_seconds_count counter",
+    "# HELP mini_router_request_duration_seconds Request duration histogram.",
+    "# TYPE mini_router_request_duration_seconds histogram",
   );
+  const histograms = new Map();
   for (const metric of requestMetrics.values()) {
-    const labels = `method="${metric.method}",route="${metric.route}"`;
-    lines.push(`mini_router_request_duration_seconds_sum{${labels}} ${metric.durationSeconds.toFixed(6)}`);
-    lines.push(`mini_router_request_duration_seconds_count{${labels}} ${metric.count}`);
+    const key = JSON.stringify([metric.method, metric.route]);
+    const histogram = histograms.get(key) || { method: metric.method, route: metric.route, count: 0, durationSeconds: 0, buckets: Array(durationBuckets.length).fill(0) };
+    histogram.count += metric.count;
+    histogram.durationSeconds += metric.durationSeconds;
+    metric.buckets.forEach((count, index) => { histogram.buckets[index] += count; });
+    histograms.set(key, histogram);
+  }
+  for (const histogram of histograms.values()) {
+    const labels = `method="${histogram.method}",route="${histogram.route}"`;
+    lines.push(`mini_router_request_duration_seconds_sum{${labels}} ${histogram.durationSeconds.toFixed(6)}`);
+    lines.push(`mini_router_request_duration_seconds_count{${labels}} ${histogram.count}`);
+    durationBuckets.forEach((bound, index) => {
+      lines.push(`mini_router_request_duration_seconds_bucket{${labels},le="${bound}"} ${histogram.buckets[index]}`);
+    });
+    lines.push(`mini_router_request_duration_seconds_bucket{${labels},le="+Inf"} ${histogram.count}`);
   }
   return `${lines.join("\n")}\n`;
 }
