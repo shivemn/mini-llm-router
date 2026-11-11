@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createClient } from "redis";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -21,8 +22,13 @@ function normalizeProvider(name, value) {
   if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
     throw new Error(`Provider '${name}' baseUrl must use HTTP or HTTPS and must not contain credentials.`);
   }
-  if (typeof value.apiKey !== "string" || !value.apiKey.trim()) {
-    throw new Error(`Provider '${name}' apiKey must be a non-empty string.`);
+  const hasInlineKey = typeof value.apiKey === "string" && Boolean(value.apiKey.trim());
+  const hasSecretId = typeof value.apiKeySecretId === "string" && Boolean(value.apiKeySecretId.trim());
+  if (hasInlineKey === hasSecretId) {
+    throw new Error(`Provider '${name}' must set exactly one of apiKey or apiKeySecretId.`);
+  }
+  if (value.apiKeySecretId !== undefined && !hasSecretId) {
+    throw new Error(`Provider '${name}' apiKeySecretId must be a non-empty secret name or ARN.`);
   }
   const timeoutMs = value.timeoutMs ?? 120_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
@@ -38,7 +44,8 @@ function normalizeProvider(name, value) {
   return {
     name,
     baseUrl: value.baseUrl.replace(/\/+$/, ""),
-    apiKey: value.apiKey,
+    apiKey: hasInlineKey ? value.apiKey : undefined,
+    apiKeySecretId: hasSecretId ? value.apiKeySecretId : undefined,
     timeoutMs,
     models: Object.fromEntries(models),
   };
@@ -138,6 +145,7 @@ function readConfig(env = process.env) {
     rateLimitWindowMs,
     redisUrl,
     redisKeyPrefix,
+    awsRegion: env.AWS_REGION || undefined,
     providers,
     routerKey,
   };
@@ -146,6 +154,46 @@ function readConfig(env = process.env) {
 const config = {
   ...readConfig(),
 };
+
+async function resolveProviderSecrets(providers, region) {
+  const secretProviders = providers.filter((provider) => provider.apiKeySecretId);
+  if (secretProviders.length === 0) return providers;
+  const client = new SecretsManagerClient(region ? { region } : {});
+  try {
+    return await Promise.all(providers.map(async (provider) => {
+      if (!provider.apiKeySecretId) return provider;
+      let response;
+      try {
+        response = await client.send(new GetSecretValueCommand({ SecretId: provider.apiKeySecretId }));
+      } catch (error) {
+        const reason = error?.name || "SecretsManagerError";
+        throw new Error(`Unable to load AWS secret for provider '${provider.name}' (${reason}).`);
+      }
+      let secretValue = response.SecretString;
+      if (secretValue === undefined && response.SecretBinary) {
+        secretValue = Buffer.from(response.SecretBinary).toString("utf8");
+      }
+      if (typeof secretValue !== "string" || !secretValue.trim()) {
+        throw new Error(`AWS secret for provider '${provider.name}' has no usable value.`);
+      }
+      try {
+        const parsed = JSON.parse(secretValue);
+        if (parsed && typeof parsed.apiKey === "string") secretValue = parsed.apiKey;
+      } catch {
+        // Plain-text secrets are also supported.
+      }
+      if (!secretValue.trim()) {
+        throw new Error(`AWS secret for provider '${provider.name}' has no usable API key.`);
+      }
+      const { apiKeySecretId, ...resolvedProvider } = provider;
+      return { ...resolvedProvider, apiKey: secretValue };
+    }));
+  } finally {
+    client.destroy();
+  }
+}
+
+config.providers = await resolveProviderSecrets(config.providers, config.awsRegion);
 
 const redisClient = config.redisUrl ? createClient({
   url: config.redisUrl,

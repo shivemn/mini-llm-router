@@ -10,7 +10,7 @@ A small local project that accepts OpenAI-compatible chat requests and routes ea
 ## Run on Windows PowerShell
 
 1. Copy `.env.example` to `.env`.
-2. Edit `.env` and set `PROVIDERS_JSON` with provider names, base URLs, API keys, and public-name-to-upstream-model mappings. Keep `.env` private; it is ignored by Git.
+2. Edit `.env` and set `PROVIDERS_JSON` with provider names, base URLs, AWS secret IDs, and public-name-to-upstream-model mappings. Keep `.env` private; it is ignored by Git.
 3. In this folder, run:
 
    ```powershell
@@ -18,6 +18,16 @@ A small local project that accepts OpenAI-compatible chat requests and routes ea
    ```
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token. Binding to any non-loopback `HOST` requires `ROUTER_API_KEY` at startup.
+
+### AWS Secrets Manager
+
+Provider configuration accepts exactly one of `apiKey` or `apiKeySecretId`. The example uses `apiKeySecretId` so API credentials stay out of provider configuration. The router reads each referenced secret once during startup using the AWS SDK's default credential provider chain, keeps it in process memory, and fails startup if it cannot retrieve the secret. Restart the router after rotating a secret. Store either the API key as the whole SecretString or JSON such as `{"apiKey":"..."}`. Set `AWS_REGION` if it is not already available from the AWS environment. Grant the runtime identity only `secretsmanager:GetSecretValue` for the required secret ARNs; an example policy is in [aws/secrets-manager-read-policy.example.json](aws/secrets-manager-read-policy.example.json).
+
+For a local host run, configure the AWS CLI credentials/profile before `npm start`. For Docker Compose, provide temporary `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and (for assumed roles) `AWS_SESSION_TOKEN` values in the ignored `.env`; the Compose `env_file` passes these into the router. For deployed workloads, use the platform's IAM role instead of long-lived access keys. Create the sample secret with:
+
+```powershell
+aws secretsmanager create-secret --name mini-llm-router/openai --secret-string '{"apiKey":"replace-with-provider-key"}' --region us-east-1
+```
 
 `MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
@@ -59,7 +69,7 @@ GitHub Actions runs this suite and builds the Docker image on pushes and pull re
 
 ## Run with Docker Compose
 
-Copy `.env.example` to `.env`, configure at least one provider, set a non-empty `ROUTER_API_KEY`, and replace `GRAFANA_ADMIN_PASSWORD`. Then run:
+Copy `.env.example` to `.env`, configure at least one provider and AWS credentials, set a non-empty `ROUTER_API_KEY`, and replace `GRAFANA_ADMIN_PASSWORD`. Then run:
 
 ```powershell
 docker compose up --build
