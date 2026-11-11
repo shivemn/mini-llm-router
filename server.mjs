@@ -60,12 +60,18 @@ function readConfig(env = process.env) {
     if (providers.length === 0) {
       throw new Error("PROVIDERS_JSON must contain at least one provider.");
     }
-  } else if (env.UPSTREAM_BASE_URL && env.UPSTREAM_API_KEY && env.UPSTREAM_MODEL) {
-    providers = [normalizeProvider("default", {
-      baseUrl: env.UPSTREAM_BASE_URL,
-      apiKey: env.UPSTREAM_API_KEY,
-      models: { [env.UPSTREAM_MODEL]: env.UPSTREAM_MODEL },
-    })];
+  } else {
+    const legacyValues = [env.UPSTREAM_BASE_URL, env.UPSTREAM_API_KEY, env.UPSTREAM_MODEL];
+    if (legacyValues.some(Boolean)) {
+      if (legacyValues.some((value) => !value)) {
+        throw new Error("Set all legacy UPSTREAM_BASE_URL, UPSTREAM_API_KEY, and UPSTREAM_MODEL values, or leave them all blank.");
+      }
+      providers = [normalizeProvider("default", {
+        baseUrl: env.UPSTREAM_BASE_URL,
+        apiKey: env.UPSTREAM_API_KEY,
+        models: { [env.UPSTREAM_MODEL]: env.UPSTREAM_MODEL },
+      })];
+    }
   }
 
   const host = env.HOST || "127.0.0.1";

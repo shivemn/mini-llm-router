@@ -205,6 +205,16 @@ test("rejects invalid port configuration at startup", () => {
   assert.match(result.stderr, /PORT must be an integer from 1 to 65535/);
 });
 
+test("rejects partially configured legacy provider settings", () => {
+  const result = spawnSync(process.execPath, ["server.mjs"], {
+    cwd: fileURLToPath(root),
+    env: { ...process.env, PROVIDERS_JSON: "", UPSTREAM_BASE_URL: "https://api.example.test/v1", UPSTREAM_API_KEY: "", UPSTREAM_MODEL: "model" },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Set all legacy UPSTREAM_BASE_URL/);
+});
+
 test("requires router authentication when binding to a non-loopback address", () => {
   const result = spawnSync(process.execPath, ["server.mjs"], {
     cwd: fileURLToPath(root),
