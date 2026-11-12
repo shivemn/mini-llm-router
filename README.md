@@ -18,7 +18,9 @@ A local LLM router that accepts OpenAI-compatible chat requests and routes each 
    npm start
    ```
 
-The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token. Binding to any non-loopback `HOST` requires `ROUTER_API_KEY` at startup.
+The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. When credentials are configured, protected endpoints require a valid Bearer token. Binding to any non-loopback `HOST` requires at least one router or client API key.
+
+For multiple callers, set `CLIENT_API_KEYS_JSON` to a JSON object mapping client labels to unique random keys of at least 32 characters, for example `{"web-app":"<random-key>","cli":"<another-random-key>"}`. Send each as `Authorization: Bearer <key>`. `ROUTER_API_KEY` remains an optional shared administrator/scraper key. Each client key receives an independent rate-limit bucket; only a hash of the presented key is used in Redis. Keep the JSON value in the ignored `.env` file, not in source control. When using the Compose Prometheus scraper, retain `ROUTER_API_KEY` so Prometheus can authenticate with its configured secret.
 
 `FREE_ONLY_MODE` defaults to `true`. Startup then accepts only OpenRouter's `openrouter/free` or `:free` model IDs, plus local endpoints such as Ollama on `localhost`, `host.docker.internal`, or `ollama`. This prevents a paid OpenRouter model or an unrelated hosted provider from being configured by mistake. Set it to `false` only if you intentionally want paid or other hosted providers.
 

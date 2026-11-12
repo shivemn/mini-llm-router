@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createClient } from "redis";
@@ -163,6 +163,13 @@ function readConfig(env = process.env) {
 
   const host = env.HOST || "127.0.0.1";
   const routerKey = env.ROUTER_API_KEY;
+  let clientApiKeys = {};
+  if (env.CLIENT_API_KEYS_JSON) {
+    try { clientApiKeys = JSON.parse(env.CLIENT_API_KEYS_JSON); } catch { throw new Error("CLIENT_API_KEYS_JSON must be a JSON object mapping client names to API keys."); }
+    if (!clientApiKeys || typeof clientApiKeys !== "object" || Array.isArray(clientApiKeys) || Object.entries(clientApiKeys).some(([name, key]) => !/^[A-Za-z0-9._-]{1,64}$/.test(name) || typeof key !== "string" || key.length < 32)) {
+      throw new Error("CLIENT_API_KEYS_JSON must map client names to API keys of at least 32 characters.");
+    }
+  }
   const freeOnly = !["0", "false", "no"].includes(String(env.FREE_ONLY_MODE ?? "true").toLowerCase());
   if (freeOnly) {
     for (const provider of providers) {
@@ -176,8 +183,8 @@ function readConfig(env = process.env) {
       }
     }
   }
-  if (!["127.0.0.1", "::1", "localhost"].includes(host) && !routerKey) {
-    throw new Error("ROUTER_API_KEY is required when HOST is not a loopback address.");
+  if (!["127.0.0.1", "::1", "localhost"].includes(host) && !routerKey && Object.keys(clientApiKeys).length === 0) {
+    throw new Error("ROUTER_API_KEY or CLIENT_API_KEYS_JSON is required when HOST is not a loopback address.");
   }
 
   return {
@@ -195,6 +202,7 @@ function readConfig(env = process.env) {
     awsRegion: env.AWS_REGION || undefined,
     providers,
     routerKey,
+    clientApiKeys,
     freeOnly,
   };
 }
@@ -262,8 +270,15 @@ function json(res, status, body) {
 }
 
 function authorized(req) {
-  if (!config.routerKey) return true;
-  return req.headers.authorization === `Bearer ${config.routerKey}`;
+  if (!config.routerKey && Object.keys(config.clientApiKeys).length === 0) return true;
+  const token = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "")?.[1];
+  if (!token) return false;
+  const matches = (expected) => {
+    const left = Buffer.from(token);
+    const right = Buffer.from(expected);
+    return left.length === right.length && timingSafeEqual(left, right);
+  };
+  return Boolean((config.routerKey && matches(config.routerKey)) || Object.values(config.clientApiKeys).some(matches));
 }
 
 async function readJson(req) {
@@ -358,7 +373,7 @@ function renderMetrics() {
 }
 
 function rateLimitKey(req) {
-  if (config.routerKey) {
+  if (config.routerKey || Object.keys(config.clientApiKeys).length > 0) {
     return `key:${createHash("sha256").update(req.headers.authorization || "").digest("hex")}`;
   }
   return `ip:${req.socket.remoteAddress || "unknown"}`;
