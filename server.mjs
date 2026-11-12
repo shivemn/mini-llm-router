@@ -283,6 +283,7 @@ const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
 const requestMetrics = new Map();
 const usageTotals = new Map();
+const upstreamRateLimits = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
 
@@ -346,6 +347,8 @@ function renderMetrics() {
     });
     lines.push(`mini_router_request_duration_seconds_bucket{${labels},le="+Inf"} ${histogram.count}`);
   }
+  lines.push("# HELP mini_router_upstream_rate_limits_total Upstream HTTP 429 responses by provider.", "# TYPE mini_router_upstream_rate_limits_total counter");
+  for (const [provider, count] of upstreamRateLimits) lines.push(`mini_router_upstream_rate_limits_total{provider="${provider.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n")}"} ${count}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -538,6 +541,7 @@ async function fetchWithFallback(model, body, requestSignal) {
     }
     try {
       const response = await fetchUpstream(candidates[index], body, requestSignal);
+      if (response.status === 429) upstreamRateLimits.set(candidates[index].name, (upstreamRateLimits.get(candidates[index].name) || 0) + 1);
       if (response.status >= 500) await recordProviderFailure(candidates[index]);
       else await recordProviderSuccess(candidates[index]);
       const canFallback = response.status === 429 || retryableStatuses.has(response.status);
@@ -711,6 +715,10 @@ const server = http.createServer(async (req, res) => {
     });
     const { response: upstreamResponse, provider: upstreamProvider } = upstream;
     const contentType = upstreamResponse.headers.get("content-type") || "application/json";
+    if (upstreamResponse.status === 429) {
+      const retryAfter = upstreamResponse.headers.get("retry-after");
+      if (retryAfter) res.setHeader("retry-after", String(Math.max(1, Math.ceil(retryDelay(upstreamResponse, 0) / 1000))));
+    }
     if (body.stream === true) {
       res.writeHead(upstreamResponse.status, { "content-type": contentType });
       if (upstreamResponse.body) await pipeline(Readable.fromWeb(upstreamResponse.body), res);

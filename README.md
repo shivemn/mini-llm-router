@@ -40,6 +40,8 @@ The client endpoint remains `POST /v1/chat/completions`. Set each provider's `pr
 
 `MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
+When an upstream returns HTTP 429 after configured retries, the router preserves the status and forwards a bounded `Retry-After` delay to the caller. Prometheus also exposes `mini_router_upstream_rate_limits_total` by configured provider, so free-tier throttling can be distinguished from router-side request limits.
+
 `MAX_CONCURRENT_REQUESTS` caps in-flight chat requests per process. It defaults to 100 and accepts values from 1 to 1000. Requests above the cap receive HTTP 503 with `Retry-After: 1`.
 
 Each provider has an in-memory circuit breaker. After `CIRCUIT_BREAKER_FAILURE_THRESHOLD` server failures or connection errors (default 3), it is skipped for `CIRCUIT_BREAKER_OPEN_MS` (default 30000 ms) while other configured providers are tried. When all providers for a model are paused, requests receive HTTP 503. Circuit state resets when a provider responds without a server error.
