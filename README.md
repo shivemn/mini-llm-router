@@ -70,6 +70,10 @@ The `/metrics` endpoint exposes Prometheus request counters and duration histogr
 
 `GET /v1/usage` returns in-memory aggregate request, token, and reported cost totals by provider and configured model alias. It does not retain prompts; totals reset when the router restarts. Usage is recorded for non-streaming responses that include a usage object; provider-reported cost is shown only when supplied.
 
+### MCP tools
+
+The optional `mcp-server.mjs` exposes `list_models`, `chat_completion`, and `get_usage` over MCP stdio. Start the router first, then configure your MCP host to launch `node` with the absolute path to `mcp-server.mjs`. Set `MCP_ROUTER_URL` if the router is not at `http://127.0.0.1:3001`, and set `MCP_ROUTER_API_KEY` (or `ROUTER_API_KEY`) when the router requires authentication. MCP JSON-RPC is written to stdout; diagnostics go to stderr.
+
 On Ctrl+C or SIGTERM, the server stops accepting new connections and allows active requests up to 10 seconds to finish before closing them.
 
 Example provider configuration:

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import ./instrumentation.mjs --env-file=.env server.mjs",
+    "mcp": "node mcp-server.mjs",
     "test": "node --test"
   },
   "engines": {
