@@ -187,7 +187,7 @@ function readConfig(env = process.env) {
     }
   }
   if (!["127.0.0.1", "::1", "localhost"].includes(host) && !routerKey && Object.keys(clientApiKeys).length === 0) {
-    throw new Error("ROUTER_API_KEY or CLIENT_API_KEYS_JSON is required when HOST is not a loopback address.");
+    throw new Error("ROUTER_API_KEY is required when HOST is not a loopback address (or configure CLIENT_API_KEYS_JSON).");
   }
 
   return {
