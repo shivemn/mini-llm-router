@@ -54,6 +54,20 @@ function normalizeProvider(name, value, env = process.env) {
   if (models.length === 0 || models.some(([alias, model]) => !alias.trim() || typeof model !== "string" || !model.trim())) {
     throw new Error(`Provider '${name}' must configure at least one non-empty model mapping.`);
   }
+  const routing = value.routing ?? {};
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) throw new Error(`Provider '${name}' routing must be an object.`);
+  if (Object.keys(routing).some((key) => !["order", "allow_fallbacks", "data_collection", "zdr"].includes(key))) {
+    throw new Error(`Provider '${name}' routing supports order, allow_fallbacks, data_collection, and zdr only.`);
+  }
+  if (routing.order !== undefined && (!Array.isArray(routing.order) || routing.order.some((item) => typeof item !== "string" || !item.trim()))) {
+    throw new Error(`Provider '${name}' routing.order must be an array of provider names.`);
+  }
+  if (routing.allow_fallbacks !== undefined && typeof routing.allow_fallbacks !== "boolean") throw new Error(`Provider '${name}' routing.allow_fallbacks must be boolean.`);
+  if (routing.data_collection !== undefined && !["allow", "deny"].includes(routing.data_collection)) throw new Error(`Provider '${name}' routing.data_collection must be allow or deny.`);
+  if (routing.zdr !== undefined && typeof routing.zdr !== "boolean") throw new Error(`Provider '${name}' routing.zdr must be boolean.`);
+  if (Object.keys(routing).length && !["openrouter.ai", "www.openrouter.ai"].includes(parsed.hostname)) {
+    throw new Error(`Provider '${name}' routing preferences are supported only for OpenRouter.`);
+  }
   return {
     name,
     protocol,
@@ -62,6 +76,7 @@ function normalizeProvider(name, value, env = process.env) {
     apiKeySecretId: hasSecretId ? value.apiKeySecretId : undefined,
     timeoutMs,
     models: Object.fromEntries(models),
+    routing: Object.freeze({ ...routing }),
   };
 }
 

@@ -69,6 +69,8 @@ OPENROUTER_API_KEY=your-openrouter-key
 PROVIDERS_JSON={"openrouter":{"protocol":"openai-compatible","baseUrl":"https://openrouter.ai/api/v1","apiKeyEnv":"OPENROUTER_API_KEY","models":{"free":"openrouter/free"}}}
 ```
 
+OpenRouter providers may also set a `routing` object with `order` (provider IDs), `allow_fallbacks` (boolean), `data_collection` (`allow` or `deny`), and `zdr` (boolean). These preferences are forwarded only to OpenRouter. For example, set `"routing":{"allow_fallbacks":false,"data_collection":"deny"}` to disable provider fallback and prefer providers that deny data collection. Provider availability and free-model capacity are controlled by OpenRouter.
+
 Clients can request `fast` or `local-model`; the router sends the mapped upstream model ID. `timeoutMs` is optional per provider, defaults to 120000, and accepts values from 100 to 300000. `GET /v1/models` lists configured public names. If multiple providers define the same public model name, the router tries them in configuration order and falls back on rate limits, temporary server failures, or connection errors. The legacy `UPSTREAM_BASE_URL`, `UPSTREAM_API_KEY`, and `UPSTREAM_MODEL` settings remain supported as a single-provider configuration; if you use them, set all three. The server validates `PORT` and each provider URL, rejects URLs with embedded credentials, requires JSON request content, and enforces a 1 MB request body limit. Leaving provider settings blank is allowed; chat requests return a configuration error until they are set.
 
 Run the automated checks with:

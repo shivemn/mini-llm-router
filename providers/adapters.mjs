@@ -77,10 +77,12 @@ export function buildProviderRequest(provider, body) {
       body: payload,
     };
   }
+  const payload = { ...body, model };
+  if (provider.routing && Object.keys(provider.routing).length) payload.provider = provider.routing;
   return {
     url: endpoint(provider.baseUrl, "chat/completions"),
     headers: { authorization: `Bearer ${provider.apiKey}` },
-    body: { ...body, model },
+    body: payload,
   };
 }
 
