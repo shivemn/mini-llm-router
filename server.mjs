@@ -144,6 +144,19 @@ function readConfig(env = process.env) {
 
   const host = env.HOST || "127.0.0.1";
   const routerKey = env.ROUTER_API_KEY;
+  const freeOnly = !["0", "false", "no"].includes(String(env.FREE_ONLY_MODE ?? "true").toLowerCase());
+  if (freeOnly) {
+    for (const provider of providers) {
+      const url = new URL(provider.baseUrl);
+      const localHost = ["localhost", "127.0.0.1", "::1", "host.docker.internal", "ollama"].includes(url.hostname);
+      const openRouter = ["openrouter.ai", "www.openrouter.ai"].includes(url.hostname);
+      const freeModels = Object.values(provider.models).every((model) => model === "openrouter/free" || model.endsWith(":free"));
+      if (localHost) continue;
+      if (!openRouter || !freeModels) {
+        throw new Error(`FREE_ONLY_MODE is enabled: provider '${provider.name}' must use OpenRouter free model IDs or a local Ollama endpoint.`);
+      }
+    }
+  }
   if (!["127.0.0.1", "::1", "localhost"].includes(host) && !routerKey) {
     throw new Error("ROUTER_API_KEY is required when HOST is not a loopback address.");
   }
@@ -162,6 +175,7 @@ function readConfig(env = process.env) {
     awsRegion: env.AWS_REGION || undefined,
     providers,
     routerKey,
+    freeOnly,
   };
 }
 

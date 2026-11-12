@@ -20,6 +20,8 @@ A local LLM router that accepts OpenAI-compatible chat requests and routes each 
 
 The server binds to `127.0.0.1:3001` by default, so it is available only on your own computer. `GET /health` checks that the server is running. If you set `ROUTER_API_KEY`, clients must send it as a Bearer token. Binding to any non-loopback `HOST` requires `ROUTER_API_KEY` at startup.
 
+`FREE_ONLY_MODE` defaults to `true`. Startup then accepts only OpenRouter's `openrouter/free` or `:free` model IDs, plus local endpoints such as Ollama on `localhost`, `host.docker.internal`, or `ollama`. This prevents a paid OpenRouter model or an unrelated hosted provider from being configured by mistake. Set it to `false` only if you intentionally want paid or other hosted providers.
+
 ### Optional AWS Secrets Manager
 
 The default OpenRouter setup reads `OPENROUTER_API_KEY` from `.env` and does not call AWS. Secrets Manager is optional and may incur charges (AWS lists $0.40 per secret per month plus API calls); skip this integration if you need to keep the setup free. [AWS pricing](https://aws.amazon.com/secrets-manager/pricing/)
