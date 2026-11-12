@@ -105,6 +105,8 @@ docker compose up --build
 
 Compose starts Redis with persistent shared rate-limit and circuit state, Prometheus with 15-day metric retention, Grafana with provisioned dashboards and data sources, an OpenTelemetry Collector, Tempo traces, and Loki logs. Grafana Alloy discovers Docker containers and ships their logs to Loki; open Grafana Explore and select Loki to query them. Loki is available at `http://127.0.0.1:3100` for local diagnostics. Grafana is available at `http://127.0.0.1:3000` (the default login is `admin`; use the password from `.env`), and Prometheus at `http://127.0.0.1:9090`. The router and monitoring UIs bind to loopback on the host. Tempo and Loki use local filesystem storage for development; use object storage and appropriate retention for production. The router image runs as the unprivileged `node` user and has a liveness health check. Alloy needs access to the Docker socket to discover and read container logs.
 
+Grafana provisions alerts for a sustained chat 5xx rate above 5%, upstream 429 responses, and a failed router scrape. They appear under **Alerting** in Grafana. External email/chat delivery needs a contact point configured in Grafana; no external destination is assumed by this project.
+
 ## Try a request
 
 In a second PowerShell window:

@@ -1,0 +1,150 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: mini-router-health
+    folder: Mini LLM Router
+    interval: 1m
+    rules:
+      - uid: mini_router_5xx
+        title: Mini Router high HTTP 5xx rate
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: sum(rate(mini_router_http_requests_total{route="/v1/chat/completions",status=~"5.."}[5m])) / clamp_min(sum(rate(mini_router_http_requests_total{route="/v1/chat/completions"}[5m])), 1e-9)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings: { mode: dropNN }
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: ""
+              refId: C
+              type: threshold
+              conditions:
+                - evaluator: { params: [0.05], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: More than 5% of chat requests are returning HTTP 5xx errors.
+        labels: { severity: warning }
+
+      - uid: mini_router_upstream_429
+        title: Mini Router upstream rate limited
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: sum(increase(mini_router_upstream_rate_limits_total[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings: { mode: dropNN }
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: ""
+              refId: C
+              type: threshold
+              conditions:
+                - evaluator: { params: [0], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: An upstream provider returned HTTP 429 during the last five minutes.
+        labels: { severity: warning }
+
+      - uid: mini_router_scrape_down
+        title: Mini Router scrape is down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: up{job="mini-llm-router"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+              settings: { mode: dropNN }
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: ""
+              refId: C
+              type: threshold
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+        for: 2m
+        noDataState: Alerting
+        execErrState: Error
+        annotations:
+          summary: Prometheus cannot scrape the Mini LLM Router.
+        labels: { severity: critical }
