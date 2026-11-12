@@ -268,7 +268,8 @@ const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
 const requestMetrics = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
-const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/chat/completions", "/metrics"]);
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/catalog/free-models", "/v1/chat/completions", "/metrics"]);
+let freeCatalogCache = { expiresAt: 0, data: [] };
 
 function metricRoute(pathname) {
   return knownMetricRoutes.has(pathname) ? pathname : "/other";
@@ -579,6 +580,31 @@ const server = http.createServer(async (req, res) => {
       owned_by: provider.name,
     })));
     return json(res, 200, { object: "list", data });
+  }
+
+  if (req.method === "GET" && pathname === "/v1/catalog/free-models") {
+    if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
+    if (Date.now() >= freeCatalogCache.expiresAt) {
+      try {
+        const response = await fetch("https://openrouter.ai/api/v1/models", { signal: AbortSignal.timeout(8000) });
+        if (!response.ok) throw new Error(`OpenRouter returned HTTP ${response.status}.`);
+        const catalog = await response.json();
+        freeCatalogCache = {
+          expiresAt: Date.now() + 5 * 60_000,
+          data: (Array.isArray(catalog.data) ? catalog.data : []).filter((model) =>
+            typeof model?.id === "string" && model.id.endsWith(":free") &&
+            Number(model?.pricing?.prompt) === 0 && Number(model?.pricing?.completion) === 0,
+          ).map(({ id, name, description, context_length: contextLength, pricing }) => ({
+            id, name, description, context_length: contextLength, pricing,
+          })),
+        };
+      } catch {
+        if (freeCatalogCache.expiresAt <= Date.now()) {
+          return json(res, 503, { error: { message: "OpenRouter's free model catalog is temporarily unavailable." } });
+        }
+      }
+    }
+    return json(res, 200, { object: "list", data: freeCatalogCache.data, cached: true });
   }
 
   if (req.method !== "POST" || pathname !== "/v1/chat/completions") {

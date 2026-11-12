@@ -109,6 +109,7 @@ If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `m
 - `GET /health/ready` — readiness probe; returns HTTP 503 until a provider is configured.
 - `GET /metrics` — Prometheus text metrics for request counts and durations; protected by `ROUTER_API_KEY` when configured.
 - `GET /v1/models` — configured public model names in OpenAI-style list format.
+- `GET /v1/catalog/free-models` — cached list of OpenRouter models marked `:free` with zero prompt and completion pricing; protected by `ROUTER_API_KEY` when configured.
 - `POST /v1/chat/completions` — forwards chat requests and provider responses.
 
 Never commit `.env` or share API keys. This starter is intended for local learning, not for an internet-facing service. Check your provider's terms and pricing before sending requests.
