@@ -1,0 +1,52 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Mini LLM Router API",
+    "version": "1.0.0",
+    "description": "OpenAI-compatible chat routing API with model catalog, usage, and health endpoints."
+  },
+  "servers": [{ "url": "http://127.0.0.1:3001" }],
+  "components": {
+    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer" } },
+    "schemas": {
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": ["model", "messages"],
+        "properties": {
+          "model": { "type": "string", "description": "Configured public model alias, such as free." },
+          "messages": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["role", "content"], "properties": { "role": { "type": "string", "enum": ["system", "developer", "user", "assistant"] }, "content": { "type": "string" } } } },
+          "stream": { "type": "boolean", "default": false },
+          "temperature": { "type": "number" },
+          "max_tokens": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": true
+      },
+      "ApiError": { "type": "object", "properties": { "error": { "type": "object", "properties": { "message": { "type": "string" } }, "required": ["message"] } }, "required": ["error"] }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/health": { "get": { "summary": "Basic process and provider status", "security": [], "responses": { "200": { "description": "Router status." } } } },
+    "/health/live": { "get": { "summary": "Liveness probe", "security": [], "responses": { "200": { "description": "Process is alive." } } } },
+    "/health/ready": { "get": { "summary": "Readiness probe", "security": [], "responses": { "200": { "description": "Router is ready." }, "503": { "description": "Router is not ready." } } } },
+    "/metrics": { "get": { "summary": "Prometheus metrics", "responses": { "200": { "description": "Prometheus text exposition." }, "401": { "description": "Invalid API key." } } } },
+    "/v1/models": { "get": { "summary": "List configured model aliases", "responses": { "200": { "description": "OpenAI-style model list." }, "401": { "description": "Invalid API key." } } } },
+    "/v1/catalog/free-models": { "get": { "summary": "List currently free OpenRouter models", "responses": { "200": { "description": "Free model catalog." }, "503": { "description": "Catalog unavailable." } } } },
+    "/v1/usage": { "get": { "summary": "Aggregate token and reported cost totals", "responses": { "200": { "description": "Usage totals." } } } },
+    "/v1/chat/completions": {
+      "post": {
+        "summary": "Create a chat completion",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatCompletionRequest" } } } },
+        "responses": {
+          "200": { "description": "Chat completion or server-sent event stream." },
+          "400": { "description": "Invalid request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } },
+          "401": { "description": "Invalid API key." },
+          "429": { "description": "Router or provider rate limit. Check Retry-After." },
+          "502": { "description": "Provider connection failed." },
+          "503": { "description": "Router or provider unavailable." },
+          "504": { "description": "Provider timed out." }
+        }
+      }
+    }
+  }
+}

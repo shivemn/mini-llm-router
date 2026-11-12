@@ -1,4 +1,5 @@
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -9,6 +10,8 @@ import { shutdownTelemetry } from "./instrumentation.mjs";
 import { adaptProviderResponse, buildProviderRequest } from "./providers/adapters.mjs";
 
 const tracer = trace.getTracer("mini-llm-router");
+const openApiDocument = readFileSync(new URL("./openapi.json", import.meta.url), "utf8");
+const swaggerHtml = `<!doctype html><html><head><meta charset="utf-8"><title>Mini LLM Router API</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'});</script></body></html>`;
 
 function normalizeProvider(name, value, env = process.env) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -305,7 +308,7 @@ const requestMetrics = new Map();
 const usageTotals = new Map();
 const upstreamRateLimits = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
-const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/docs", "/openapi.json", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
 
 function recordUsage(provider, requestedModel, usage) {
   if (!usage || typeof usage !== "object") return;
@@ -623,6 +626,15 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "GET" && pathname === "/health") {
     return json(res, 200, { ok: true, configured: config.providers.length > 0 });
+  }
+
+  if (req.method === "GET" && pathname === "/openapi.json") {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    return res.end(openApiDocument);
+  }
+  if (req.method === "GET" && pathname === "/docs") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    return res.end(swaggerHtml);
   }
 
   if (req.method === "GET" && pathname === "/v1/models") {
