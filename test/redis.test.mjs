@@ -4,7 +4,7 @@ import { once } from "node:events";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { after, before, test } from "node:test";
+import { after, test } from "node:test";
 
 const root = new URL("../", import.meta.url);
 const redisUrl = process.env.REDIS_URL;
@@ -86,8 +86,7 @@ async function postChat(port, model = "shared") {
   });
 }
 
-before(async () => {
-  if (!redisUrl) return;
+async function setupRedisTest() {
   upstream = http.createServer(async (req, res) => {
     for await (const _chunk of req) {}
     upstreamHits++;
@@ -106,7 +105,7 @@ before(async () => {
     waitForReady(appPortA, appA, startedA.output),
     waitForReady(appPortB, appB, startedB.output),
   ]);
-});
+}
 
 after(async () => {
   for (const app of [appA, appB]) {
@@ -122,6 +121,7 @@ after(async () => {
 });
 
 test("shares rate limits and circuit state across router instances", { skip: !redisUrl }, async () => {
+  await setupRedisTest();
   const failed = await postChat(appPortA);
   assert.equal(failed.status, 503);
   assert.equal(upstreamHits, 1);
