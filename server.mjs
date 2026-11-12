@@ -267,8 +267,23 @@ let activeRequests = 0;
 const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
 const requestMetrics = new Map();
+const usageTotals = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
-const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/catalog/free-models", "/v1/chat/completions", "/metrics"]);
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
+
+function recordUsage(provider, requestedModel, usage) {
+  if (!usage || typeof usage !== "object") return;
+  const key = JSON.stringify([provider.name, requestedModel]);
+  const total = usageTotals.get(key) || { provider: provider.name, model: requestedModel, requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 };
+  total.requests++;
+  for (const [field, source] of [["promptTokens", "prompt_tokens"], ["completionTokens", "completion_tokens"], ["totalTokens", "total_tokens"]]) {
+    const value = Number(usage[source]);
+    if (Number.isFinite(value) && value >= 0) total[field] += value;
+  }
+  const cost = Number(usage.cost ?? usage.total_cost);
+  if (Number.isFinite(cost) && cost >= 0) total.cost += cost;
+  usageTotals.set(key, total);
+}
 let freeCatalogCache = { expiresAt: 0, data: [] };
 
 function metricRoute(pathname) {
@@ -515,7 +530,7 @@ async function fetchWithFallback(model, body, requestSignal) {
         await response.body?.cancel();
         continue;
       }
-      return response;
+      return { response, provider: candidates[index] };
     } catch (error) {
       if (requestSignal.aborted) throw error;
       if (error.statusCode) throw error;
@@ -607,6 +622,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { object: "list", data: freeCatalogCache.data, cached: true });
   }
 
+  if (req.method === "GET" && pathname === "/v1/usage") {
+    if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
+    return json(res, 200, { object: "usage", data: [...usageTotals.values()] });
+  }
+
   if (req.method !== "POST" || pathname !== "/v1/chat/completions") {
     return json(res, 404, { error: { message: "Not found. Try POST /v1/chat/completions or GET /v1/models." } });
   }
@@ -662,9 +682,10 @@ const server = http.createServer(async (req, res) => {
       attributes: { "llm.model.requested": body.model },
     }, async (span) => {
       try {
-        const response = await fetchWithFallback(body.model, body, requestAbort.signal);
-        span.setAttribute("http.response.status_code", response.status);
-        return response;
+        const result = await fetchWithFallback(body.model, body, requestAbort.signal);
+        span.setAttribute("llm.provider.name", result.provider.name);
+        span.setAttribute("http.response.status_code", result.response.status);
+        return result;
       } catch (error) {
         span.recordException(error);
         span.setStatus({ code: SpanStatusCode.ERROR });
@@ -673,15 +694,19 @@ const server = http.createServer(async (req, res) => {
         span.end();
       }
     });
-    const contentType = upstream.headers.get("content-type") || "application/json";
+    const { response: upstreamResponse, provider: upstreamProvider } = upstream;
+    const contentType = upstreamResponse.headers.get("content-type") || "application/json";
     if (body.stream === true) {
-      res.writeHead(upstream.status, { "content-type": contentType });
-      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res);
+      res.writeHead(upstreamResponse.status, { "content-type": contentType });
+      if (upstreamResponse.body) await pipeline(Readable.fromWeb(upstreamResponse.body), res);
       else res.end();
       return;
     }
-    const responseBody = await upstream.text();
-    res.writeHead(upstream.status, { "content-type": contentType });
+    const responseBody = await upstreamResponse.text();
+    if (upstreamResponse.ok) {
+      try { recordUsage(upstreamProvider, body.model, JSON.parse(responseBody).usage); } catch { /* Ignore non-JSON provider responses. */ }
+    }
+    res.writeHead(upstreamResponse.status, { "content-type": contentType });
     res.end(responseBody);
   } catch (error) {
     if (requestAbort.signal.aborted || res.destroyed) return;

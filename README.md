@@ -58,6 +58,8 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector URL to enable traces
 
 The `/metrics` endpoint exposes Prometheus request counters and duration histograms with bounded routes and status labels. When `ROUTER_API_KEY` is set, metrics require that same key; Compose passes it to Prometheus through a mounted secret. The histogram supports Prometheus percentile calculations such as p50 and p95.
 
+`GET /v1/usage` returns in-memory aggregate request, token, and reported cost totals by provider and configured model alias. It does not retain prompts; totals reset when the router restarts. Usage is recorded for non-streaming responses that include a usage object; provider-reported cost is shown only when supplied.
+
 On Ctrl+C or SIGTERM, the server stops accepting new connections and allows active requests up to 10 seconds to finish before closing them.
 
 Example provider configuration:
@@ -110,6 +112,7 @@ If `ROUTER_API_KEY` is blank, omit the `-Headers` argument. Set the request's `m
 - `GET /metrics` — Prometheus text metrics for request counts and durations; protected by `ROUTER_API_KEY` when configured.
 - `GET /v1/models` — configured public model names in OpenAI-style list format.
 - `GET /v1/catalog/free-models` — cached list of OpenRouter models marked `:free` with zero prompt and completion pricing; protected by `ROUTER_API_KEY` when configured.
+- `GET /v1/usage` — aggregate non-streaming token and provider-reported cost totals; protected by `ROUTER_API_KEY` when configured.
 - `POST /v1/chat/completions` — forwards chat requests and provider responses.
 
 Never commit `.env` or share API keys. This starter is intended for local learning, not for an internet-facing service. Check your provider's terms and pricing before sending requests.
