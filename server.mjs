@@ -127,6 +127,10 @@ function readConfig(env = process.env) {
   if (redisKeyPrefix.length > 100 || /\s/.test(redisKeyPrefix)) {
     throw new Error("REDIS_KEY_PREFIX must be at most 100 characters and contain no whitespace.");
   }
+  const cacheTtlSeconds = Number(env.LLM_CACHE_TTL_SECONDS ?? "0");
+  if (!Number.isInteger(cacheTtlSeconds) || cacheTtlSeconds < 0 || cacheTtlSeconds > 86400) {
+    throw new Error("LLM_CACHE_TTL_SECONDS must be an integer from 0 to 86400.");
+  }
 
   let providers = [];
   if (env.PROVIDERS_JSON) {
@@ -187,6 +191,7 @@ function readConfig(env = process.env) {
     rateLimitWindowMs,
     redisUrl,
     redisKeyPrefix,
+    cacheTtlSeconds,
     awsRegion: env.AWS_REGION || undefined,
     providers,
     routerKey,
@@ -696,6 +701,24 @@ const server = http.createServer(async (req, res) => {
     return json(res, 404, { error: { message: `Unknown model '${body.model}'. List available models with GET /v1/models.` } });
   }
 
+  const cacheKey = redisClient && config.cacheTtlSeconds > 0 && body.stream !== true
+    ? `${config.redisKeyPrefix}:completion:${createHash("sha256").update(JSON.stringify({ body, providers: config.providers.map(({ name, baseUrl, models }) => ({ name, baseUrl, models })) })).digest("hex")}`
+    : undefined;
+  if (cacheKey) {
+    res.setHeader("x-router-cache", "MISS");
+    try {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        const entry = JSON.parse(cached);
+        res.setHeader("x-router-cache", "HIT");
+        res.writeHead(entry.status, { "content-type": entry.contentType });
+        return res.end(entry.body);
+      }
+    } catch {
+      console.error(JSON.stringify({ event: "completion_cache_read_failed" }));
+    }
+  }
+
   try {
     const upstream = await tracer.startActiveSpan("llm.router.route", {
       attributes: { "llm.model.requested": body.model },
@@ -728,6 +751,13 @@ const server = http.createServer(async (req, res) => {
     const responseBody = await upstreamResponse.text();
     if (upstreamResponse.ok) {
       try { recordUsage(upstreamProvider, body.model, JSON.parse(responseBody).usage); } catch { /* Ignore non-JSON provider responses. */ }
+    }
+    if (cacheKey && upstreamResponse.ok && contentType.includes("application/json")) {
+      try {
+        await redisClient.set(cacheKey, JSON.stringify({ status: upstreamResponse.status, contentType, body: responseBody }), { EX: config.cacheTtlSeconds });
+      } catch {
+        console.error(JSON.stringify({ event: "completion_cache_write_failed" }));
+      }
     }
     res.writeHead(upstreamResponse.status, { "content-type": contentType });
     res.end(responseBody);
