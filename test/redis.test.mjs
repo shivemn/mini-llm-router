@@ -86,7 +86,8 @@ async function postChat(port, model = "shared") {
   });
 }
 
-before({ skip: !redisUrl }, async () => {
+before(async () => {
+  if (!redisUrl) return;
   upstream = http.createServer(async (req, res) => {
     for await (const _chunk of req) {}
     upstreamHits++;
