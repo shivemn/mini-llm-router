@@ -22,6 +22,10 @@ The server binds to `127.0.0.1:3001` by default, so it is available only on your
 
 `FREE_ONLY_MODE` defaults to `true`. Startup then accepts only OpenRouter's `openrouter/free` or `:free` model IDs, plus local endpoints such as Ollama on `localhost`, `host.docker.internal`, or `ollama`. This prevents a paid OpenRouter model or an unrelated hosted provider from being configured by mistake. Set it to `false` only if you intentionally want paid or other hosted providers.
 
+### Optional local Ollama
+
+Ollama can run models on your own computer without sending prompts to a hosted model provider. Install Ollama and download a model that fits your device using the [Ollama Windows guide](https://docs.ollama.com/windows) and its `ollama pull` command. Ollama exposes an OpenAI-compatible chat endpoint. Add an `ollama` provider alongside OpenRouter in `PROVIDERS_JSON`, mapping an alias such as `local` to the exact model tag installed on your machine. Set `OLLAMA_API_KEY=local-only` (Ollama does not require this key; the router's OpenAI-compatible adapter sends it as a placeholder). Use `http://host.docker.internal:11434/v1` when the router runs in Docker Desktop, or `http://127.0.0.1:11434/v1` when running `npm start` directly. The `.env.example` contains a combined configuration template. `FREE_ONLY_MODE=true` allows these local endpoints and rejects hosted paid routes.
+
 ### Optional AWS Secrets Manager
 
 The default OpenRouter setup reads `OPENROUTER_API_KEY` from `.env` and does not call AWS. Secrets Manager is optional and may incur charges (AWS lists $0.40 per secret per month plus API calls); skip this integration if you need to keep the setup free. [AWS pricing](https://aws.amazon.com/secrets-manager/pricing/)
