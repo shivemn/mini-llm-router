@@ -313,13 +313,19 @@ const dailyClientBuckets = new Map();
 const requestMetrics = new Map();
 const usageTotals = new Map();
 const upstreamRateLimits = new Map();
+const providerRequestStats = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
-const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/docs", "/openapi.json", "/v1/models", "/v1/capabilities", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/health/providers", "/docs", "/openapi.json", "/v1/models", "/v1/capabilities", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
 
 function providerCapabilities(provider) {
   return provider.protocol === "openai-compatible"
     ? ["chat", "streaming", "tools", "json_object", "json_schema"]
     : ["chat", "streaming", "tools_non_streaming", "json_object", "json_schema"];
+}
+
+function providerStats(provider) {
+  if (!providerRequestStats.has(provider.name)) providerRequestStats.set(provider.name, { requests: 0, errors: 0, latencyMs: 0, lastStatus: null, lastRequestAt: null });
+  return providerRequestStats.get(provider.name);
 }
 
 function usageRedisKey(providerName, requestedModel) {
@@ -457,6 +463,12 @@ function renderMetrics() {
   }
   lines.push("# HELP mini_router_upstream_rate_limits_total Upstream HTTP 429 responses by provider.", "# TYPE mini_router_upstream_rate_limits_total counter");
   for (const [provider, count] of upstreamRateLimits) lines.push(`mini_router_upstream_rate_limits_total{provider="${provider.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n")}"} ${count}`);
+  lines.push("# HELP mini_router_provider_requests_total Completed upstream provider responses.", "# TYPE mini_router_provider_requests_total counter");
+  for (const [provider, stats] of providerRequestStats) lines.push(`mini_router_provider_requests_total{provider="${provider}"} ${stats.requests}`);
+  lines.push("# HELP mini_router_provider_errors_total Upstream provider errors.", "# TYPE mini_router_provider_errors_total counter");
+  for (const [provider, stats] of providerRequestStats) lines.push(`mini_router_provider_errors_total{provider="${provider}"} ${stats.errors}`);
+  lines.push("# HELP mini_router_provider_latency_ms_total Cumulative upstream response latency in milliseconds.", "# TYPE mini_router_provider_latency_ms_total counter");
+  for (const [provider, stats] of providerRequestStats) lines.push(`mini_router_provider_latency_ms_total{provider="${provider}"} ${stats.latencyMs.toFixed(3)}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -686,7 +698,14 @@ async function fetchWithFallback(model, body, requestSignal) {
       continue;
     }
     try {
+      const providerStartedAt = performance.now();
       const response = await fetchUpstream(candidates[index], body, requestSignal);
+      const stats = providerStats(candidates[index]);
+      stats.requests++;
+      stats.latencyMs += performance.now() - providerStartedAt;
+      stats.lastStatus = response.status;
+      stats.lastRequestAt = new Date().toISOString();
+      if (response.status >= 500) stats.errors++;
       if (response.status === 429) upstreamRateLimits.set(candidates[index].name, (upstreamRateLimits.get(candidates[index].name) || 0) + 1);
       if (response.status >= 500) await recordProviderFailure(candidates[index]);
       else await recordProviderSuccess(candidates[index]);
@@ -699,6 +718,12 @@ async function fetchWithFallback(model, body, requestSignal) {
     } catch (error) {
       if (requestSignal.aborted) throw error;
       if (error.statusCode) throw error;
+      const stats = providerStats(candidates[index]);
+      stats.requests++;
+      stats.errors++;
+      stats.latencyMs += 0;
+      stats.lastStatus = null;
+      stats.lastRequestAt = new Date().toISOString();
       await recordProviderFailure(candidates[index]);
       lastError = error;
     }
@@ -741,6 +766,16 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && pathname === "/health/ready") {
     const ready = config.providers.length > 0 && (!redisClient || redisClient.isReady);
     return json(res, ready ? 200 : 503, { ready });
+  }
+  if (req.method === "GET" && pathname === "/health/providers") {
+    if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
+    return json(res, 200, { providers: await Promise.all(config.providers.map(async (provider) => ({
+      name: provider.name,
+      protocol: provider.protocol,
+      configured: true,
+      circuitOpen: await isProviderCircuitOpen(provider),
+      ...(providerRequestStats.get(provider.name) || { requests: 0, errors: 0, latencyMs: 0, lastStatus: null, lastRequestAt: null }),
+    }))) });
   }
   if (req.method === "GET" && pathname === "/metrics") {
     if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
