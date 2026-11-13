@@ -98,6 +98,10 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
     throw new Error("MAX_UPSTREAM_RETRIES must be an integer from 0 to 5.");
   }
+  const requestBudgetMs = Number(env.MAX_REQUEST_BUDGET_MS ?? "180000");
+  if (!Number.isInteger(requestBudgetMs) || requestBudgetMs < 1000 || requestBudgetMs > 600_000) {
+    throw new Error("MAX_REQUEST_BUDGET_MS must be an integer from 1000 to 600000.");
+  }
   const maxConcurrentRequests = Number(env.MAX_CONCURRENT_REQUESTS ?? "100");
   if (!Number.isInteger(maxConcurrentRequests) || maxConcurrentRequests < 1 || maxConcurrentRequests > 1000) {
     throw new Error("MAX_CONCURRENT_REQUESTS must be an integer from 1 to 1000.");
@@ -203,6 +207,7 @@ function readConfig(env = process.env) {
     host,
     port,
     maxRetries,
+    requestBudgetMs,
     maxConcurrentRequests,
     circuitFailureThreshold,
     circuitOpenMs,
@@ -767,6 +772,7 @@ const server = http.createServer(async (req, res) => {
   const requestId = randomUUID();
   const startedAt = performance.now();
   const requestAbort = new AbortController();
+  const requestSignal = AbortSignal.any([requestAbort.signal, AbortSignal.timeout(config.requestBudgetMs)]);
   res.setHeader("x-request-id", requestId);
   req.once("aborted", () => requestAbort.abort());
   res.once("close", () => {
@@ -959,7 +965,7 @@ const server = http.createServer(async (req, res) => {
       attributes: { "llm.model.requested": body.model },
     }, async (span) => {
       try {
-        const result = await fetchWithFallback(body.model, body, requestAbort.signal);
+        const result = await fetchWithFallback(body.model, body, requestSignal);
         span.setAttribute("llm.provider.name", result.provider.name);
         span.setAttribute("http.response.status_code", result.response.status);
         return result;

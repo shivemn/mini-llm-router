@@ -46,6 +46,8 @@ The client endpoint remains `POST /v1/chat/completions`. Set each provider's `pr
 
 `MAX_UPSTREAM_RETRIES` controls retries for temporary network failures and upstream HTTP 408, 429, 500, 502, 503, and 504 responses. It defaults to 0 because retrying a chat request can duplicate provider charges, and accepts values from 0 to 5. Retries use exponential backoff; valid `Retry-After` headers are honored up to 10 seconds. Timeouts are not retried.
 
+`MAX_REQUEST_BUDGET_MS` sets a wall-clock deadline across provider attempts and retry backoff (default 180000 ms; range 1000–600000). When it expires before a client disconnects, the router returns HTTP 504.
+
 When an upstream returns HTTP 429 after configured retries, the router preserves the status and forwards a bounded `Retry-After` delay to the caller. Prometheus also exposes `mini_router_upstream_rate_limits_total` by configured provider, so free-tier throttling can be distinguished from router-side request limits.
 
 `MAX_CONCURRENT_REQUESTS` caps in-flight chat requests per process. It defaults to 100 and accepts values from 1 to 1000. Requests above the cap receive HTTP 503 with `Retry-After: 1`.
