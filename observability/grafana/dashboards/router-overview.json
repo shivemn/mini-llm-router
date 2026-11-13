@@ -41,6 +41,27 @@
       "title": "5xx response rate",
       "type": "timeseries",
       "targets": [{ "expr": "100 * sum(rate(mini_router_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(mini_router_http_requests_total[5m])), 0.000001)", "legendFormat": "5xx %", "refId": "A" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "title": "Upstream requests and errors",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum by (provider) (rate(mini_router_provider_requests_total[5m]))", "legendFormat": "requests {{provider}}", "refId": "A" },
+        { "expr": "sum by (provider) (rate(mini_router_provider_errors_total[5m]))", "legendFormat": "errors {{provider}}", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "title": "Average upstream latency",
+      "type": "timeseries",
+      "targets": [{ "expr": "sum by (provider) (rate(mini_router_provider_latency_ms_total[5m])) / clamp_min(sum by (provider) (rate(mini_router_provider_requests_total[5m])), 0.000001)", "legendFormat": "{{provider}}", "refId": "A" }]
     }
   ],
   "schemaVersion": 39,
