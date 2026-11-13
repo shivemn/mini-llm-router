@@ -113,6 +113,10 @@ function readConfig(env = process.env) {
   if (!Number.isInteger(rateLimitWindowMs) || rateLimitWindowMs < 1000 || rateLimitWindowMs > 3_600_000) {
     throw new Error("RATE_LIMIT_WINDOW_MS must be an integer from 1000 to 3600000.");
   }
+  const dailyClientRequestLimit = Number(env.CLIENT_DAILY_REQUEST_LIMIT ?? "0");
+  if (!Number.isInteger(dailyClientRequestLimit) || dailyClientRequestLimit < 0 || dailyClientRequestLimit > 1_000_000) {
+    throw new Error("CLIENT_DAILY_REQUEST_LIMIT must be an integer from 0 to 1000000.");
+  }
   let redisUrl;
   if (env.REDIS_URL) {
     let parsedRedisUrl;
@@ -199,6 +203,7 @@ function readConfig(env = process.env) {
     circuitOpenMs,
     rateLimitMaxRequests,
     rateLimitWindowMs,
+    dailyClientRequestLimit,
     redisUrl,
     redisKeyPrefix,
     cacheTtlSeconds,
@@ -304,6 +309,7 @@ const retryableStatuses = new Set([408, 429, 500, 502, 503, 504]);
 let activeRequests = 0;
 const providerCircuits = new Map();
 const rateLimitBuckets = new Map();
+const dailyClientBuckets = new Map();
 const requestMetrics = new Map();
 const usageTotals = new Map();
 const upstreamRateLimits = new Map();
@@ -470,6 +476,44 @@ if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 local ttl = redis.call('PTTL', KEYS[1])
 return { count, ttl }
 `;
+
+const redisDailyClientLimitScript = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return count
+`;
+
+async function consumeDailyClientQuota(req) {
+  if (config.dailyClientRequestLimit === 0) return { allowed: true };
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const secondsUntilReset = Math.max(1, Math.ceil((Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime()) / 1000));
+  const identity = rateLimitKey(req);
+  if (redisClient) {
+    try {
+      const count = Number(await redisClient.eval(redisDailyClientLimitScript, {
+        keys: [`${config.redisKeyPrefix}:daily-client:${date}:${identity}`],
+        arguments: [String(secondsUntilReset + 60)],
+      }));
+      return count <= config.dailyClientRequestLimit
+        ? { allowed: true }
+        : { allowed: false, retryAfter: secondsUntilReset };
+    } catch {
+      throw redisStateUnavailable();
+    }
+  }
+  const key = `${date}:${identity}`;
+  let bucket = dailyClientBuckets.get(key);
+  if (!bucket) {
+    if (dailyClientBuckets.size >= 10_000) dailyClientBuckets.clear();
+    bucket = { count: 0, resetAt: Date.now() + secondsUntilReset * 1000 };
+    dailyClientBuckets.set(key, bucket);
+  }
+  bucket.count++;
+  return bucket.count <= config.dailyClientRequestLimit
+    ? { allowed: true }
+    : { allowed: false, retryAfter: secondsUntilReset };
+}
 
 function redisStateUnavailable() {
   const error = new Error("Shared state store is unavailable.");
@@ -772,6 +816,17 @@ const server = http.createServer(async (req, res) => {
   }
   if (!config.providers.some((candidate) => Object.hasOwn(candidate.models, body.model))) {
     return json(res, 404, { error: { message: `Unknown model '${body.model}'. List available models with GET /v1/models.` } });
+  }
+
+  let dailyQuota;
+  try {
+    dailyQuota = await consumeDailyClientQuota(req);
+  } catch {
+    return json(res, 503, { error: { message: "Shared daily-quota store is unavailable." } });
+  }
+  if (!dailyQuota.allowed) {
+    res.setHeader("retry-after", String(dailyQuota.retryAfter));
+    return json(res, 429, { error: { message: "Daily request limit for this client was reached." } });
   }
 
   const cacheKey = redisClient && config.cacheTtlSeconds > 0 && body.stream !== true

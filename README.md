@@ -54,6 +54,8 @@ Each provider has an in-memory circuit breaker. After `CIRCUIT_BREAKER_FAILURE_T
 
 `RATE_LIMIT_MAX_REQUESTS` limits each router key (or source IP when router authentication is disabled) to a fixed-window request count. The default is 60 requests per 60000 ms. Excess requests receive HTTP 429 with a `Retry-After` header. These in-memory limits apply per process.
 
+`CLIENT_DAILY_REQUEST_LIMIT` optionally adds a per-credential UTC daily request ceiling (default `0`, disabled). It is shared through Redis when configured, resets at UTC midnight, and returns HTTP 429 with `Retry-After` when the quota is reached. Without Redis, the quota is process-local.
+
 Set `REDIS_URL` to share rate-limit counters and circuit-breaker state across router processes. Redis operations use atomic commands/scripts; if the shared store becomes unavailable, chat requests fail closed with HTTP 503. Without `REDIS_URL`, these features use process-local memory. `REDIS_KEY_PREFIX` defaults to `mini-llm-router` to isolate keys when Redis is shared.
 
 Set `LLM_CACHE_TTL_SECONDS` to a value from 1 to 86400 to cache successful non-streaming responses in Redis; it defaults to `0` (disabled). The cache key is a SHA-256 digest, but cached response content is stored in Redis until expiry. Avoid enabling it for sensitive prompts unless your Redis storage and access controls are appropriate. Streaming responses are never cached. `X-Router-Cache` reports `HIT` or `MISS` when caching is enabled.
