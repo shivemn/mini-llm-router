@@ -50,6 +50,10 @@ function normalizeProvider(name, value, env = process.env) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
     throw new Error(`Provider '${name}' timeoutMs must be an integer from 100 to 300000.`);
   }
+  const priority = value.priority ?? 0;
+  if (!Number.isInteger(priority) || priority < -1000 || priority > 1000) {
+    throw new Error(`Provider '${name}' priority must be an integer from -1000 to 1000.`);
+  }
   if (!value.models || typeof value.models !== "object" || Array.isArray(value.models)) {
     throw new Error(`Provider '${name}' models must map public model names to upstream model names.`);
   }
@@ -78,6 +82,7 @@ function normalizeProvider(name, value, env = process.env) {
     apiKey: hasInlineKey ? value.apiKey : hasEnvKey ? env[value.apiKeyEnv] : undefined,
     apiKeySecretId: hasSecretId ? value.apiKeySecretId : undefined,
     timeoutMs,
+    priority,
     models: Object.fromEntries(models),
     routing: Object.freeze({ ...routing }),
   };
@@ -689,7 +694,10 @@ async function fetchUpstream(provider, body, requestSignal) {
 }
 
 async function fetchWithFallback(model, body, requestSignal) {
-  const candidates = config.providers.filter((provider) => Object.hasOwn(provider.models, model));
+  const candidates = config.providers.filter((provider) => Object.hasOwn(provider.models, model))
+    .map((provider, index) => ({ provider, index }))
+    .sort((left, right) => right.provider.priority - left.provider.priority || left.index - right.index)
+    .map(({ provider }) => provider);
   let lastError;
   let openProviders = 0;
   for (let index = 0; index < candidates.length; index++) {
