@@ -314,7 +314,13 @@ const requestMetrics = new Map();
 const usageTotals = new Map();
 const upstreamRateLimits = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
-const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/docs", "/openapi.json", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
+const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/docs", "/openapi.json", "/v1/models", "/v1/capabilities", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
+
+function providerCapabilities(provider) {
+  return provider.protocol === "openai-compatible"
+    ? ["chat", "streaming", "tools", "json_object", "json_schema"]
+    : ["chat", "streaming", "tools_non_streaming", "json_object", "json_schema"];
+}
 
 function usageRedisKey(providerName, requestedModel) {
   return `${config.redisKeyPrefix}:usage:${encodeURIComponent(providerName)}:${encodeURIComponent(requestedModel)}`;
@@ -761,8 +767,22 @@ const server = http.createServer(async (req, res) => {
       id: model,
       object: "model",
       owned_by: provider.name,
+      capabilities: providerCapabilities(provider),
     })));
     return json(res, 200, { object: "list", data });
+  }
+
+  if (req.method === "GET" && pathname === "/v1/capabilities") {
+    if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
+    return json(res, 200, {
+      object: "list",
+      data: config.providers.flatMap((provider) => Object.keys(provider.models).map((model) => ({
+        model,
+        provider: provider.name,
+        protocol: provider.protocol,
+        capabilities: providerCapabilities(provider),
+      }))),
+    });
   }
 
   if (req.method === "GET" && pathname === "/v1/catalog/free-models") {
