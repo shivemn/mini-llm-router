@@ -576,9 +576,20 @@ function redisProviderKey(providerName, state) {
 }
 
 async function isProviderCircuitOpen(provider) {
-  if (!redisClient) return circuitFor(provider).openUntil > Date.now();
+  if (!redisClient) {
+    const circuit = circuitFor(provider);
+    if (circuit.openUntil > Date.now()) return true;
+    if (circuit.probePendingUntil > Date.now()) {
+      if (circuit.probeInFlight) return true;
+      circuit.probeInFlight = true;
+    }
+    return false;
+  }
   try {
-    return (await redisClient.exists(redisProviderKey(provider.name, "open"))) > 0;
+    if ((await redisClient.exists(redisProviderKey(provider.name, "open"))) > 0) return true;
+    if ((await redisClient.exists(redisProviderKey(provider.name, "probe_pending"))) === 0) return false;
+    const lock = await redisClient.set(redisProviderKey(provider.name, "probe"), "1", { NX: true, PX: 30_000 });
+    return lock !== "OK";
   } catch {
     throw redisStateUnavailable();
   }
@@ -586,7 +597,7 @@ async function isProviderCircuitOpen(provider) {
 
 function circuitFor(provider) {
   if (!providerCircuits.has(provider.name)) {
-    providerCircuits.set(provider.name, { failures: 0, openUntil: 0 });
+    providerCircuits.set(provider.name, { failures: 0, openUntil: 0, probePendingUntil: 0, probeInFlight: false });
   }
   return providerCircuits.get(provider.name);
 }
@@ -595,10 +606,10 @@ async function recordProviderFailure(provider) {
   if (redisClient) {
     try {
       await redisClient.eval(
-        "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],ARGV[2]) end; if n>=tonumber(ARGV[1]) then redis.call('SET',KEYS[2],'1','PX',ARGV[2]); redis.call('DEL',KEYS[1]); return 1 end; return 0",
+        "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],ARGV[2]) end; if n>=tonumber(ARGV[1]) then redis.call('SET',KEYS[2],'1','PX',ARGV[2]); redis.call('SET',KEYS[3],'1','PX',ARGV[3]); redis.call('DEL',KEYS[1]); redis.call('DEL',KEYS[4]); return 1 end; return 0",
         {
-          keys: [redisProviderKey(provider.name, "failures"), redisProviderKey(provider.name, "open")],
-          arguments: [String(config.circuitFailureThreshold), String(config.circuitOpenMs)],
+          keys: [redisProviderKey(provider.name, "failures"), redisProviderKey(provider.name, "open"), redisProviderKey(provider.name, "probe_pending"), redisProviderKey(provider.name, "probe")],
+          arguments: [String(config.circuitFailureThreshold), String(config.circuitOpenMs), String(config.circuitOpenMs + 60_000)],
         },
       );
       return;
@@ -610,6 +621,8 @@ async function recordProviderFailure(provider) {
   circuit.failures++;
   if (circuit.failures >= config.circuitFailureThreshold) {
     circuit.openUntil = Date.now() + config.circuitOpenMs;
+    circuit.probePendingUntil = circuit.openUntil + 60_000;
+    circuit.probeInFlight = false;
   }
 }
 
@@ -619,6 +632,8 @@ async function recordProviderSuccess(provider) {
       await redisClient.del([
         redisProviderKey(provider.name, "failures"),
         redisProviderKey(provider.name, "open"),
+        redisProviderKey(provider.name, "probe_pending"),
+        redisProviderKey(provider.name, "probe"),
       ]);
       return;
     } catch {
@@ -628,6 +643,8 @@ async function recordProviderSuccess(provider) {
   const circuit = circuitFor(provider);
   circuit.failures = 0;
   circuit.openUntil = 0;
+  circuit.probePendingUntil = 0;
+  circuit.probeInFlight = false;
 }
 
 function retryDelay(response, attempt) {
