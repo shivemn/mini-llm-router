@@ -4,7 +4,7 @@ A local LLM router that accepts OpenAI-compatible chat requests and routes each 
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 24 or newer (CI covers Node.js 24 and 26)
 - An OpenRouter API key for its currently free models (no subscription or card required to start; free usage is rate-limited)
 
 ## Run on Windows PowerShell
