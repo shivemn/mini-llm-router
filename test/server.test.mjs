@@ -63,6 +63,10 @@ before(async () => {
     }
     if (upstreamRequest.body.stream === true) {
       res.writeHead(200, { "content-type": "text/event-stream" });
+      if (upstreamRequest.body.messages[0]?.content === "stream-usage-test") {
+        res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"cost":0}}\n\ndata: [DONE]\n\n');
+        return;
+      }
       res.end('data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
       return;
     }
@@ -292,6 +296,18 @@ test("passes server-sent event responses through for stream requests", async () 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /text\/event-stream/);
   assert.equal(await response.text(), 'data: {"choices":[{"delta":{"content":"streamed"}}]}\n\ndata: [DONE]\n\n');
+});
+
+test("records usage from streamed OpenRouter-style chunks", async () => {
+  const response = await fetch(`http://127.0.0.1:${appPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer router-secret", "content-type": "application/json" },
+    body: JSON.stringify({ model: "fast", stream: true, messages: [{ role: "user", content: "stream-usage-test" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"total_tokens":5/);
+  const usage = await fetch(`http://127.0.0.1:${appPort}/v1/usage`, { headers: { authorization: "Bearer router-secret" } });
+  assert.equal((await usage.json()).data[0].totalTokens, 5);
 });
 
 test("aborts the upstream request when the client disconnects", async () => {

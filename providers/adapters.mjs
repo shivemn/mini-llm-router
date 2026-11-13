@@ -257,8 +257,11 @@ async function* geminiStream(response, model) {
 export async function adaptProviderResponse(provider, response, body) {
   if (!response.ok || provider.protocol === "openai-compatible") return response.ok ? response : adaptError(response);
   if (body.stream === true) {
-    const stream = provider.protocol === "anthropic" ? anthropicStream(response, body.model) : geminiStream(response, body.model);
-    return new Response(Readable.toWeb(Readable.from(stream)), {
+    const chunks = provider.protocol === "anthropic" ? anthropicStream(response, body.model) : geminiStream(response, body.model);
+    const stream = Readable.from((async function* () {
+      for await (const chunk of chunks) yield Buffer.from(chunk);
+    })(), { objectMode: false });
+    return new Response(Readable.toWeb(stream), {
       status: response.status,
       headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" },
     });
