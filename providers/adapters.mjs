@@ -44,6 +44,20 @@ function functionTools(body) {
   });
 }
 
+function jsonOutputConfig(body) {
+  const format = body.response_format;
+  if (format === undefined) return undefined;
+  if (!format || typeof format !== "object" || Array.isArray(format) || !["json_object", "json_schema"].includes(format.type)) {
+    throw invalidRequest("Anthropic and Gemini adapters support response_format types json_object and json_schema.");
+  }
+  if (format.type === "json_schema") {
+    const schema = format.json_schema?.schema;
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw invalidRequest("response_format.json_schema.schema must be a JSON Schema object.");
+    return { schema };
+  }
+  return { schema: { type: "object" } };
+}
+
 function toolChoiceName(choice) {
   return choice && typeof choice === "object" ? choice.function?.name : undefined;
 }
@@ -137,6 +151,8 @@ export function buildProviderRequest(provider, body) {
       stream: body.stream === true,
     };
     if (system) payload.system = system;
+    const jsonFormat = jsonOutputConfig(body);
+    if (jsonFormat) payload.output_config = { format: { type: "json_schema", ...jsonFormat } };
     if (tools.length) payload.tools = tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
     if (body.tool_choice !== undefined) {
       const choice = anthropicChoice(body.tool_choice);
@@ -160,10 +176,15 @@ export function buildProviderRequest(provider, body) {
     const contents = geminiContents(conversation);
     const action = body.stream === true ? "streamGenerateContent?alt=sse" : "generateContent";
     const payload = { contents };
+    const generationConfig = {};
+    const jsonFormat = jsonOutputConfig(body);
+    if (jsonFormat) {
+      generationConfig.responseMimeType = "application/json";
+      if (body.response_format.type === "json_schema") generationConfig.responseJsonSchema = jsonFormat.schema;
+    }
     const tools = functionTools(body);
     if (tools.length) payload.tools = [{ functionDeclarations: tools }];
     if (systemParts.length) payload.systemInstruction = { parts: systemParts };
-    const generationConfig = {};
     if (body.temperature !== undefined) generationConfig.temperature = body.temperature;
     if (body.top_p !== undefined) generationConfig.topP = body.top_p;
     if (body.max_tokens !== undefined || body.max_completion_tokens !== undefined) {

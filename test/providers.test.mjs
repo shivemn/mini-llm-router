@@ -132,3 +132,16 @@ test("rejects streaming tool requests for text adapters", () => {
   const provider = { protocol: "anthropic", baseUrl: "https://api.anthropic.test/v1", apiKey: "test-key", models: { fast: "claude-test" } };
   assert.throws(() => buildProviderRequest(provider, { ...baseBody, stream: true, tools: [] }), { statusCode: 400 });
 });
+
+test("maps JSON response formats for Anthropic and Gemini", () => {
+  const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
+  const anthropic = buildProviderRequest({ protocol: "anthropic", baseUrl: "https://api.anthropic.test/v1", apiKey: "test", models: { fast: "claude-test" } }, {
+    ...baseBody, response_format: { type: "json_schema", json_schema: { name: "answer", schema } },
+  });
+  assert.deepEqual(anthropic.body.output_config.format, { type: "json_schema", schema });
+  const gemini = buildProviderRequest({ protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.test/v1beta", apiKey: "test", models: { fast: "gemini-test" } }, {
+    ...baseBody, response_format: { type: "json_schema", json_schema: { name: "answer", schema } },
+  });
+  assert.equal(gemini.body.generationConfig.responseMimeType, "application/json");
+  assert.deepEqual(gemini.body.generationConfig.responseJsonSchema, schema);
+});
