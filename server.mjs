@@ -770,6 +770,7 @@ async function fetchWithFallback(model, body, requestSignal) {
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname;
   const requestId = randomUUID();
+  const activeSpanContext = trace.getActiveSpan()?.spanContext();
   const startedAt = performance.now();
   const requestAbort = new AbortController();
   const requestSignal = AbortSignal.any([requestAbort.signal, AbortSignal.timeout(config.requestBudgetMs)]);
@@ -784,6 +785,7 @@ const server = http.createServer(async (req, res) => {
     console.log(JSON.stringify({
       event: "request_complete",
       requestId,
+      ...(activeSpanContext?.traceId ? { traceId: activeSpanContext.traceId, spanId: activeSpanContext.spanId } : {}),
       method: req.method,
       path: pathname,
       status: res.statusCode,

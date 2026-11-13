@@ -64,7 +64,7 @@ Set `LLM_CACHE_TTL_SECONDS` to a value from 1 to 86400 to cache successful non-s
 
 Requests with `"stream": true` pass the upstream response stream through to the client, including its content type and server-sent event chunks.
 
-Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; it does not log request bodies or credentials.
+Each response includes an `X-Request-ID` header. The server writes one JSON log entry per completed request with its ID, method, path, status, and duration; when tracing is active, the log also includes the trace and span IDs for cross-linking. It does not log request bodies or credentials.
 
 ### OpenTelemetry tracing
 
