@@ -310,7 +310,11 @@ const upstreamRateLimits = new Map();
 const durationBuckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 const knownMetricRoutes = new Set(["/health", "/health/live", "/health/ready", "/docs", "/openapi.json", "/v1/models", "/v1/catalog/free-models", "/v1/usage", "/v1/chat/completions", "/metrics"]);
 
-function recordUsage(provider, requestedModel, usage) {
+function usageRedisKey(providerName, requestedModel) {
+  return `${config.redisKeyPrefix}:usage:${encodeURIComponent(providerName)}:${encodeURIComponent(requestedModel)}`;
+}
+
+async function recordUsage(provider, requestedModel, usage) {
   if (!usage || typeof usage !== "object") return;
   const key = JSON.stringify([provider.name, requestedModel]);
   const total = usageTotals.get(key) || { provider: provider.name, model: requestedModel, requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 };
@@ -322,6 +326,48 @@ function recordUsage(provider, requestedModel, usage) {
   const cost = Number(usage.cost ?? usage.total_cost);
   if (Number.isFinite(cost) && cost >= 0) total.cost += cost;
   usageTotals.set(key, total);
+  if (redisClient) {
+    try {
+      const redisKey = usageRedisKey(provider.name, requestedModel);
+      const updates = redisClient.multi()
+        .hIncrBy(redisKey, "requests", 1)
+        .hIncrBy(redisKey, "promptTokens", Number(usage.prompt_tokens) || 0)
+        .hIncrBy(redisKey, "completionTokens", Number(usage.completion_tokens) || 0)
+        .hIncrBy(redisKey, "totalTokens", Number(usage.total_tokens) || 0);
+      if (Number.isFinite(cost) && cost >= 0) updates.hIncrByFloat(redisKey, "cost", cost);
+      await updates.exec();
+    } catch {
+      console.error(JSON.stringify({ event: "usage_persistence_failed", provider: provider.name, model: requestedModel }));
+    }
+  }
+}
+
+async function getUsageTotals() {
+  if (!redisClient) return [...usageTotals.values()];
+  const rows = [];
+  for (const provider of config.providers) {
+    for (const model of Object.keys(provider.models)) {
+      try {
+        const values = await redisClient.hGetAll(usageRedisKey(provider.name, model));
+        if (Object.keys(values).length) {
+          rows.push({
+            provider: provider.name,
+            model,
+            requests: Number(values.requests || 0),
+            promptTokens: Number(values.promptTokens || 0),
+            completionTokens: Number(values.completionTokens || 0),
+            totalTokens: Number(values.totalTokens || 0),
+            cost: Number(values.cost || 0),
+          });
+        }
+      } catch {
+        console.error(JSON.stringify({ event: "usage_read_failed", provider: provider.name, model }));
+        const local = usageTotals.get(JSON.stringify([provider.name, model]));
+        if (local) rows.push(local);
+      }
+    }
+  }
+  return rows;
 }
 let freeCatalogCache = { expiresAt: 0, data: [] };
 
@@ -675,7 +721,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && pathname === "/v1/usage") {
     if (!authorized(req)) return json(res, 401, { error: { message: "Invalid router API key." } });
-    return json(res, 200, { object: "usage", data: [...usageTotals.values()] });
+    return json(res, 200, { object: "usage", data: await getUsageTotals() });
   }
 
   if (req.method !== "POST" || pathname !== "/v1/chat/completions") {
@@ -777,7 +823,7 @@ const server = http.createServer(async (req, res) => {
     }
     const responseBody = await upstreamResponse.text();
     if (upstreamResponse.ok) {
-      try { recordUsage(upstreamProvider, body.model, JSON.parse(responseBody).usage); } catch { /* Ignore non-JSON provider responses. */ }
+      try { await recordUsage(upstreamProvider, body.model, JSON.parse(responseBody).usage); } catch { /* Ignore non-JSON provider responses. */ }
     }
     if (cacheKey && upstreamResponse.ok && contentType.includes("application/json")) {
       try {

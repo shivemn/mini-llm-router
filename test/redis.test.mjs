@@ -66,7 +66,7 @@ function startRouter(port) {
         },
       }),
       MAX_UPSTREAM_RETRIES: "0",
-      RATE_LIMIT_MAX_REQUESTS: "10",
+      RATE_LIMIT_MAX_REQUESTS: "20",
       RATE_LIMIT_WINDOW_MS: "60000",
       CIRCUIT_BREAKER_FAILURE_THRESHOLD: "1",
       CIRCUIT_BREAKER_OPEN_MS: "30000",
@@ -88,8 +88,15 @@ async function postChat(port, model = "shared") {
 
 async function setupRedisTest() {
   upstream = http.createServer(async (req, res) => {
-    for await (const _chunk of req) {}
+    let rawBody = "";
+    for await (const chunk of req) rawBody += chunk;
+    const request = JSON.parse(rawBody);
     upstreamHits++;
+    if (request.messages[0]?.content === "usage-test") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ model: "mock-model", usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20, cost: 0 }, choices: [{ message: { content: "usage recorded" } }] }));
+      return;
+    }
     res.writeHead(503, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: { message: "mock provider failure" } }));
   });
@@ -126,12 +133,24 @@ test("shares rate limits and circuit state across router instances", { skip: !re
   assert.equal(failed.status, 503);
   assert.equal(upstreamHits, 1);
 
+  const usage = await fetch(`http://127.0.0.1:${appPortA}/v1/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer redis-test-key", "content-type": "application/json" },
+    body: JSON.stringify({ model: "shared", messages: [{ role: "user", content: "usage-test" }] }),
+  });
+  assert.equal(usage.status, 200);
+  const persistedUsage = await fetch(`http://127.0.0.1:${appPortB}/v1/usage`, { headers: { authorization: "Bearer redis-test-key" } });
+  assert.equal(persistedUsage.status, 200);
+  assert.deepEqual((await persistedUsage.json()).data[0], {
+    provider: "mock", model: "shared", requests: 1, promptTokens: 12, completionTokens: 8, totalTokens: 20, cost: 0,
+  });
+
   const circuitOpen = await postChat(appPortB);
   assert.equal(circuitOpen.status, 503);
   assert.match((await circuitOpen.json()).error.message, /All providers.*temporarily unavailable/);
-  assert.equal(upstreamHits, 1, "second instance should see the shared open circuit");
+  assert.equal(upstreamHits, 2, "second instance should see the shared open circuit");
 
-  for (let index = 0; index < 8; index++) {
+  for (let index = 0; index < 17; index++) {
     const response = await postChat(appPortA, "unknown-model");
     assert.equal(response.status, 404);
   }
