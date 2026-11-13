@@ -83,3 +83,52 @@ test("requests OpenRouter usage in streaming responses only", () => {
   assert.equal(buildProviderRequest(openRouter, { ...baseBody, stream: true }).body.stream_options.include_usage, true);
   assert.equal(buildProviderRequest(local, { ...baseBody, stream: true }).body.stream_options, undefined);
 });
+
+test("translates OpenAI tools and tool results to Anthropic messages", () => {
+  const provider = { protocol: "anthropic", baseUrl: "https://api.anthropic.test/v1", apiKey: "test-key", models: { fast: "claude-test" } };
+  const body = {
+    ...baseBody,
+    tools: [{ type: "function", function: { name: "lookup", description: "Find data", parameters: { type: "object", properties: { q: { type: "string" } } } } }],
+    tool_choice: { type: "function", function: { name: "lookup" } },
+    messages: [
+      { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{\"q\":\"x\"}" } }] },
+      { role: "tool", tool_call_id: "call-1", content: "found" },
+    ],
+  };
+  const request = buildProviderRequest(provider, body);
+  assert.deepEqual(request.body.tools[0].input_schema, body.tools[0].function.parameters);
+  assert.deepEqual(request.body.tool_choice, { type: "tool", name: "lookup" });
+  assert.equal(request.body.messages[0].content[0].type, "tool_use");
+  assert.equal(request.body.messages[1].content[0].type, "tool_result");
+});
+
+test("translates OpenAI tools and tool results to Gemini contents", () => {
+  const provider = { protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.test/v1beta", apiKey: "test-key", models: { fast: "gemini-test" } };
+  const request = buildProviderRequest(provider, {
+    ...baseBody,
+    tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object", properties: {} } } }],
+    tool_choice: "required",
+    messages: [
+      { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "lookup", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call-1", content: "found" },
+    ],
+  });
+  assert.equal(request.body.tools[0].functionDeclarations[0].name, "lookup");
+  assert.deepEqual(request.body.toolConfig.functionCallingConfig, { mode: "ANY" });
+  assert.deepEqual(request.body.contents[0].parts[0].functionCall.args, {});
+  assert.deepEqual(request.body.contents[1].parts[0].functionResponse.response, { result: "found" });
+});
+
+test("normalizes provider tool calls into OpenAI chat completions", async () => {
+  const anthropic = await adaptProviderResponse({ protocol: "anthropic" }, new Response(JSON.stringify({
+    content: [{ type: "tool_use", id: "tool-1", name: "lookup", input: { q: "x" } }], stop_reason: "tool_use", usage: {},
+  })), baseBody);
+  const result = await anthropic.json();
+  assert.equal(result.choices[0].finish_reason, "tool_calls");
+  assert.deepEqual(JSON.parse(result.choices[0].message.tool_calls[0].function.arguments), { q: "x" });
+});
+
+test("rejects streaming tool requests for text adapters", () => {
+  const provider = { protocol: "anthropic", baseUrl: "https://api.anthropic.test/v1", apiKey: "test-key", models: { fast: "claude-test" } };
+  assert.throws(() => buildProviderRequest(provider, { ...baseBody, stream: true, tools: [] }), { statusCode: 400 });
+});

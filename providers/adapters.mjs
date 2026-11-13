@@ -10,18 +10,107 @@ function messageText(content) {
   throw error;
 }
 
-function conversationText(body) {
-  if (body.tools !== undefined || body.tool_choice !== undefined || body.functions !== undefined || body.function_call !== undefined) {
-    const error = new Error("Tool and function calling are not supported by the Anthropic or Gemini text adapters.");
-    error.statusCode = 400;
-    throw error;
+function invalidRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function conversationMessages(body) {
+  if (body.functions !== undefined || body.function_call !== undefined) {
+    throw invalidRequest("Use the modern tools and tool_choice fields instead of legacy function calling.");
   }
-  if (!Array.isArray(body.messages) || body.messages.some((message) => !["system", "developer", "user", "assistant"].includes(message.role))) {
-    const error = new Error("This provider adapter supports system, developer, user, and assistant text messages.");
-    error.statusCode = 400;
-    throw error;
+  if (body.stream === true && (body.tools !== undefined || body.tool_choice !== undefined)) {
+    throw invalidRequest("Tool calling with Anthropic and Gemini adapters is supported for non-streaming requests only.");
   }
-  return body.messages.map((message) => ({ role: message.role, text: messageText(message.content) }));
+  if (!Array.isArray(body.messages) || body.messages.some((message) => !["system", "developer", "user", "assistant", "tool"].includes(message.role))) {
+    throw invalidRequest("This provider adapter supports system, developer, user, assistant, and tool messages.");
+  }
+  return body.messages.map((message) => ({ ...message, text: message.content == null ? "" : messageText(message.content) }));
+}
+
+function functionTools(body) {
+  if (body.tools === undefined) return [];
+  if (!Array.isArray(body.tools)) throw invalidRequest("tools must be an array of function tools.");
+  return body.tools.map((tool) => {
+    const fn = tool?.function;
+    if (tool?.type !== "function" || typeof fn?.name !== "string" || !fn.name.trim()) {
+      throw invalidRequest("Each tool must have type 'function' and a non-empty function name.");
+    }
+    if (fn.parameters !== undefined && (!fn.parameters || typeof fn.parameters !== "object" || Array.isArray(fn.parameters))) {
+      throw invalidRequest(`Tool '${fn.name}' parameters must be a JSON Schema object.`);
+    }
+    return { name: fn.name, description: fn.description || "", parameters: fn.parameters || { type: "object", properties: {} } };
+  });
+}
+
+function toolChoiceName(choice) {
+  return choice && typeof choice === "object" ? choice.function?.name : undefined;
+}
+
+function parseArguments(value, name) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  throw invalidRequest(`Tool '${name}' arguments must be a JSON object.`);
+}
+
+function anthropicChoice(choice) {
+  if (choice === "none") return undefined;
+  if (choice === "required") return { type: "any" };
+  const named = toolChoiceName(choice);
+  if (named) return { type: "tool", name: named };
+  if (choice === undefined || choice === "auto") return { type: "auto" };
+  throw invalidRequest("Anthropic tool_choice must be auto, none, required, or a named function.");
+}
+
+function geminiChoice(choice) {
+  if (choice === "none") return { mode: "NONE" };
+  if (choice === "required") return { mode: "ANY" };
+  const named = toolChoiceName(choice);
+  if (named) return { mode: "ANY", allowedFunctionNames: [named] };
+  if (choice === undefined || choice === "auto") return { mode: "AUTO" };
+  throw invalidRequest("Gemini tool_choice must be auto, none, required, or a named function.");
+}
+
+function toolCallFromOpenAi(call) {
+  if (!call?.id || !call.function?.name) throw invalidRequest("Each tool call requires an id and function name.");
+  return { type: "tool_use", id: call.id, name: call.function.name, input: parseArguments(call.function.arguments, call.function.name) };
+}
+
+function geminiContents(conversation) {
+  const callNames = new Map();
+  for (const message of conversation) {
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls || []) {
+        if (!call?.id || !call.function?.name) throw invalidRequest("Each tool call requires an id and function name.");
+        callNames.set(call.id, call.function.name);
+      }
+    }
+  }
+  return conversation.filter((message) => !["system", "developer"].includes(message.role)).map((message) => {
+    if (message.role === "tool") {
+      const name = callNames.get(message.tool_call_id);
+      if (!name) throw invalidRequest(`No preceding assistant tool call matches tool_call_id '${message.tool_call_id}'.`);
+      return { role: "user", parts: [{ functionResponse: { name, response: { result: message.text } } }] };
+    }
+    const parts = [];
+    if (message.text) parts.push({ text: message.text });
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls || []) {
+        parts.push({ functionCall: { name: call.function.name, args: parseArguments(call.function.arguments, call.function.name) } });
+      }
+    }
+    return { role: message.role === "assistant" ? "model" : "user", parts };
+  });
+}
+
+function unsupportedLegacyFunctionMessage() {
+  return invalidRequest("This provider adapter supports text and modern function tool messages.");
 }
 
 function endpoint(baseUrl, path) {
@@ -31,10 +120,15 @@ function endpoint(baseUrl, path) {
 export function buildProviderRequest(provider, body) {
   const model = provider.models[body.model];
   if (provider.protocol === "anthropic") {
-    const conversation = conversationText(body);
+    const conversation = conversationMessages(body);
+    const tools = functionTools(body);
     const system = conversation.filter((message) => ["system", "developer"].includes(message.role)).map((message) => message.text).join("\n\n");
-    const messages = conversation.filter((message) => !["system", "developer"].includes(message.role))
-      .map((message) => ({ role: message.role === "assistant" ? "assistant" : "user", content: message.text }));
+    const messages = conversation.filter((message) => !["system", "developer"].includes(message.role)).map((message) => {
+      if (message.role === "tool") return { role: "user", content: [{ type: "tool_result", tool_use_id: message.tool_call_id, content: message.text }] };
+      const content = message.role === "assistant" && Array.isArray(message.tool_calls)
+        ? [...(message.text ? [{ type: "text", text: message.text }] : []), ...message.tool_calls.map(toolCallFromOpenAi)] : message.text;
+      return { role: message.role === "assistant" ? "assistant" : "user", content };
+    });
     const path = provider.baseUrl.endsWith("/v1") ? "messages" : "v1/messages";
     const payload = {
       model,
@@ -43,6 +137,11 @@ export function buildProviderRequest(provider, body) {
       stream: body.stream === true,
     };
     if (system) payload.system = system;
+    if (tools.length) payload.tools = tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }));
+    if (body.tool_choice !== undefined) {
+      const choice = anthropicChoice(body.tool_choice);
+      if (choice) payload.tool_choice = choice;
+    }
     for (const key of ["temperature", "top_p", "top_k", "metadata"]) {
       if (body[key] !== undefined) payload[key] = body[key];
     }
@@ -56,12 +155,13 @@ export function buildProviderRequest(provider, body) {
     };
   }
   if (provider.protocol === "gemini") {
-    const conversation = conversationText(body);
+    const conversation = conversationMessages(body);
     const systemParts = conversation.filter((message) => ["system", "developer"].includes(message.role)).map((message) => ({ text: message.text }));
-    const contents = conversation.filter((message) => !["system", "developer"].includes(message.role))
-      .map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.text }] }));
+    const contents = geminiContents(conversation);
     const action = body.stream === true ? "streamGenerateContent?alt=sse" : "generateContent";
     const payload = { contents };
+    const tools = functionTools(body);
+    if (tools.length) payload.tools = [{ functionDeclarations: tools }];
     if (systemParts.length) payload.systemInstruction = { parts: systemParts };
     const generationConfig = {};
     if (body.temperature !== undefined) generationConfig.temperature = body.temperature;
@@ -71,6 +171,10 @@ export function buildProviderRequest(provider, body) {
     }
     if (body.stop !== undefined) generationConfig.stopSequences = Array.isArray(body.stop) ? body.stop : [body.stop];
     if (Object.keys(generationConfig).length) payload.generationConfig = generationConfig;
+    if (body.tool_choice !== undefined) {
+      const choice = geminiChoice(body.tool_choice);
+      if (choice) payload.toolConfig = { functionCallingConfig: choice };
+    }
     return {
       url: endpoint(provider.baseUrl, `models/${encodeURIComponent(model)}:${action}`),
       headers: { "x-goog-api-key": provider.apiKey },
@@ -99,13 +203,19 @@ function openAiFinishReason(reason) {
   return "stop";
 }
 
-function chatCompletion({ id, model, text, finishReason, promptTokens = 0, completionTokens = 0 }) {
+function chatCompletion({ id, model, text, toolCalls = [], finishReason, promptTokens = 0, completionTokens = 0 }) {
+  const message = { role: "assistant", content: text || null };
+  if (toolCalls.length) message.tool_calls = toolCalls.map((call, index) => ({
+    id: call.id || `call_${index}`,
+    type: "function",
+    function: { name: call.name, arguments: JSON.stringify(call.arguments || {}) },
+  }));
   return {
     id: id || `chatcmpl-${Date.now()}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: openAiFinishReason(finishReason) }],
+    choices: [{ index: 0, message, finish_reason: toolCalls.length ? "tool_calls" : openAiFinishReason(finishReason) }],
     usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
   };
 }
@@ -136,10 +246,12 @@ async function adaptAnthropicResponse(response, body) {
   const result = await readJsonResponse(response);
   if (!result) return jsonResponse(response, { error: { message: "Provider returned an invalid JSON response." } });
   const text = Array.isArray(result.content) ? result.content.filter((part) => part.type === "text").map((part) => part.text || "").join("") : "";
+  const toolCalls = Array.isArray(result.content) ? result.content.filter((part) => part.type === "tool_use").map((part) => ({ id: part.id, name: part.name, arguments: part.input })) : [];
   return jsonResponse(response, chatCompletion({
     id: result.id,
     model: body.model,
     text,
+    toolCalls,
     finishReason: result.stop_reason,
     promptTokens: result.usage?.input_tokens || 0,
     completionTokens: result.usage?.output_tokens || 0,
@@ -151,11 +263,13 @@ async function adaptGeminiResponse(response, body) {
   if (!result) return jsonResponse(response, { error: { message: "Provider returned an invalid JSON response." } });
   const candidate = result.candidates?.[0];
   const text = candidate?.content?.parts?.filter((part) => typeof part.text === "string").map((part) => part.text).join("") || "";
+  const toolCalls = candidate?.content?.parts?.filter((part) => part.functionCall).map((part, index) => ({ id: `call_${index}`, name: part.functionCall.name, arguments: part.functionCall.args })) || [];
   const usage = result.usageMetadata || {};
   return jsonResponse(response, chatCompletion({
     id: result.responseId,
     model: body.model,
     text,
+    toolCalls,
     finishReason: candidate?.finishReason,
     promptTokens: usage.promptTokenCount || 0,
     completionTokens: usage.candidatesTokenCount || 0,
