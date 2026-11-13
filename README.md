@@ -70,7 +70,7 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP collector URL to enable traces
 
 The `/metrics` endpoint exposes Prometheus request counters and duration histograms with bounded routes and status labels. When `ROUTER_API_KEY` is set, metrics require that same key; Compose passes it to Prometheus through a mounted secret. The histogram supports Prometheus percentile calculations such as p50 and p95.
 
-`GET /v1/usage` returns aggregate request, token, and reported cost totals by provider and configured model alias. With Redis configured, totals are shared between router instances and survive restarts; without Redis, they remain process-local. The router does not retain prompts. Usage is recorded for non-streaming responses that include a usage object; provider-reported cost is shown only when supplied.
+`GET /v1/usage` returns aggregate request, token, and reported cost totals by provider and configured model alias. With Redis configured, totals are shared between router instances and survive restarts; without Redis, they remain process-local. The router does not retain prompts. Usage is recorded when non-streaming or streaming responses include usage data; provider-reported cost is shown only when supplied.
 
 ### MCP tools
 

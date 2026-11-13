@@ -375,6 +375,33 @@ async function getUsageTotals() {
   }
   return rows;
 }
+
+function captureStreamUsage(source, provider, requestedModel) {
+  return Readable.from((async function* () {
+    const decoder = new TextDecoder();
+    let pending = "";
+    let latestUsage;
+    const collect = (text) => {
+      pending += text;
+      const blocks = pending.split(/\r?\n\r?\n/);
+      pending = blocks.pop() || "";
+      for (const block of blocks) {
+        const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+        if (!data || data === "[DONE]") continue;
+        try {
+          const usage = JSON.parse(data).usage;
+          if (usage && typeof usage === "object") latestUsage = usage;
+        } catch { /* Ignore non-JSON SSE events. */ }
+      }
+    };
+    for await (const chunk of source) {
+      collect(decoder.decode(chunk, { stream: true }));
+      yield chunk;
+    }
+    collect(`${decoder.decode()}\n\n`);
+    if (latestUsage) await recordUsage(provider, requestedModel, latestUsage);
+  })());
+}
 let freeCatalogCache = { expiresAt: 0, data: [] };
 
 function metricRoute(pathname) {
@@ -872,7 +899,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (body.stream === true) {
       res.writeHead(upstreamResponse.status, { "content-type": contentType });
-      if (upstreamResponse.body) await pipeline(Readable.fromWeb(upstreamResponse.body), res);
+      if (upstreamResponse.body) {
+        const source = Readable.fromWeb(upstreamResponse.body);
+        await pipeline(captureStreamUsage(source, upstreamProvider, body.model), res);
+      }
       else res.end();
       return;
     }

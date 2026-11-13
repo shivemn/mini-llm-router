@@ -78,6 +78,12 @@ export function buildProviderRequest(provider, body) {
     };
   }
   const payload = { ...body, model };
+  if (body.stream === true && ["openrouter.ai", "www.openrouter.ai"].includes(new URL(provider.baseUrl).hostname)) {
+    const streamOptions = body.stream_options && typeof body.stream_options === "object" && !Array.isArray(body.stream_options)
+      ? body.stream_options
+      : {};
+    payload.stream_options = { ...streamOptions, include_usage: true };
+  }
   if (provider.routing && Object.keys(provider.routing).length) payload.provider = provider.routing;
   return {
     url: endpoint(provider.baseUrl, "chat/completions"),
@@ -192,23 +198,32 @@ async function* readSseEvents(stream) {
   }
 }
 
-function streamChunk(id, model, delta, finishReason = null) {
-  return `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`;
+function streamChunk(id, model, delta, finishReason = null, usage = undefined) {
+  const chunk = { id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason: finishReason }] };
+  if (usage) chunk.usage = usage;
+  return `data: ${JSON.stringify(chunk)}\n\n`;
 }
 
 async function* anthropicStream(response, model) {
   let id = `chatcmpl-${Date.now()}`;
+  let promptTokens = 0;
   for await (const item of readSseEvents(response.body)) {
     if (item.data === "[DONE]") break;
     let event;
     try { event = JSON.parse(item.data); } catch { continue; }
     if (event.type === "message_start") {
       id = event.message?.id || id;
+      promptTokens = Number(event.message?.usage?.input_tokens) || 0;
       yield streamChunk(id, model, { role: "assistant" });
     } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
       yield streamChunk(id, model, { content: event.delta.text || "" });
-    } else if (event.type === "message_delta" && event.delta?.stop_reason) {
-      yield streamChunk(id, model, {}, openAiFinishReason(event.delta.stop_reason));
+    } else if (event.type === "message_delta" && (event.delta?.stop_reason || event.usage)) {
+      const completionTokens = Number(event.usage?.output_tokens) || 0;
+      yield streamChunk(id, model, {}, event.delta?.stop_reason ? openAiFinishReason(event.delta.stop_reason) : null, {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      });
     } else if (event.type === "error") {
       yield `data: ${JSON.stringify({ error: { message: event.error?.message || "Provider stream failed." } })}\n\n`;
     }
@@ -225,7 +240,16 @@ async function* geminiStream(response, model) {
     const candidate = event.candidates?.[0];
     const text = candidate?.content?.parts?.filter((part) => typeof part.text === "string").map((part) => part.text).join("");
     if (text) yield streamChunk(id, model, { content: text });
-    if (candidate?.finishReason) yield streamChunk(id, model, {}, openAiFinishReason(candidate.finishReason));
+    const usage = event.usageMetadata;
+    if (candidate?.finishReason || usage) {
+      const promptTokens = Number(usage?.promptTokenCount) || 0;
+      const completionTokens = Number(usage?.candidatesTokenCount) || 0;
+      yield streamChunk(id, model, {}, candidate?.finishReason ? openAiFinishReason(candidate.finishReason) : null, {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: Number(usage?.totalTokenCount) || promptTokens + completionTokens,
+      });
+    }
   }
   yield "data: [DONE]\n\n";
 }
